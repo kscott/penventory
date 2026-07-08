@@ -13,11 +13,13 @@
 		"lint": "prettier --check . && eslint .",
 		"format": "prettier --write .",
 		"test:unit": "vitest",
-		"test": "npm run test:unit -- --run",
-		"test:coverage": "npm run test:unit -- --run --coverage"
+		"test": "npm run test:unit -- --run && npm run test:e2e",
+		"test:coverage": "npm run test:unit -- --run --coverage",
+		"test:e2e": "playwright install --with-deps chromium && playwright test"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
+		"@playwright/test": "^1.60.0",
 		"@sveltejs/adapter-auto": "^7.0.1",
 		"@sveltejs/kit": "^2.63.0",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
