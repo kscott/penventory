@@ -1,9 +1,10 @@
 # Architecture — Decision Log
 
 Current structure and the running record of decisions made. Update this whenever something
-structural changes: new file, new type, extracted function, deferred observation. Decision log
-for decisions made; improvement backlog for things noticed but not acted on. This document is
-how continuity holds across sessions.
+structural changes: new file, new type, extracted function. Decisions only — not a todo list.
+Something noticed but not yet decided gets a GitHub issue, not an entry here; an entry lands
+once there's an actual decision to record. This document is how continuity holds across
+sessions.
 
 ## Decision log
 
@@ -200,11 +201,13 @@ lives in FPC," never silently blended into another field. Fixed: `color_fpc`, `c
 `color_override_source` is Ken's explicit pointer at which one is authoritative for a specific
 ink (this is what "corrected hex" actually is — a pointer, not a fifth stored value); `color`
 itself is COMPUTED at read time by a lookup-hierarchy service, never stored or duplicated — same
-pattern already used for `used`/`swatched`/`color_family`. Default precedence order when nothing
-is manually overridden is still open. `color_fpc` gets its own explicit, narrow refresh
-operation (`phase1-plan.md` step 8) — matched-only, diff-reviewed, updates only that one field —
-since re-syncing a legitimately-changed FPC value is a different, safer operation than the main
-import's create-new-rows path.
+pattern already used for `used`/`swatched`/`color_family`. Default precedence when nothing is
+manually overridden: swatch → colorimeter → fpc. `color_fpc` gets its own explicit, narrow
+refresh operation (`phase1-plan.md` step 8) — matched-only, diff-reviewed, updates only that one
+field — since re-syncing a legitimately-changed FPC value is a different, safer operation than
+the main import's create-new-rows path. `color_colorimeter` is populated by an import of
+`colorimeter.csv`, scheduled to **Phase 4** (not Phase 3) — it reuses the more refined
+match/diff/review pattern established by then rather than a one-off Phase 3 bolt-on.
 
 **2026-07-08 — `observations.inking_id` confirmed: one table for standalone notes and "Mid-use"
 notes both.** Resolves the vision doc's third lifecycle moment (Start/Mid-use/End) that had no
@@ -219,10 +222,50 @@ confusion (Ken: "the string designation confuses"). Applied across every constra
 `project-plan.md` — `size_category`, `condition`, `ownership_state`, `purity`, `base_size`,
 `point_size`, `type`, `sheen`, `shading`, and all polymorphic type-discriminator columns
 (`purchasable_type`, `subject_type`, `owner_type`, `kind`, `aliasable_type`, `taggable_type`,
-`intent`). A few fields (`feedback`, nib `wetness`, ink `wetness`/`flow`) are marked
-`enum(values TBD)` — confirmed as constrained in concept, but the exact value sets were never
-nailed down with Ken and shouldn't be invented.
+`intent`). `feedback`, nib `wetness`, ink `wetness`/`flow`/`dry_time` all resolved to
+`enum(high / medium / low)` — spelled out in full, not "H/M/L" shorthand (Ken: "I'm using h/m/l
+as shortcut. I think the app should use high/medium/low"). `dry_time` states its direction
+explicitly (high = slow/long to dry, low = fast) since high/low is inherently ambiguous for a
+time concept without it.
 
-## Improvement backlog
+**2026-07-08 — Nib `point_size` absorbs stub/italic mm widths; `line_width`/`line_variation`
+dropped.** Real data showed stub-style widths (1.0/1.1/1.4/1.5mm) playing the identical role
+`point_size`'s letter codes play for round nibs — same underlying fact (nib width), different
+notation by convention. Added to the same `point_size` enum rather than a separate field.
+`line_width` and `line_variation` were inherited from the original pre-review schema draft and
+never re-derived against real data or vision.md — dropped as unjustified once `point_size`
+covers what `line_width` was guessed to mean; nothing replaced `line_variation`.
 
-Nothing yet — Phase 0 hasn't started.
+**2026-07-08 — `inkings.nib_id` is required, not nullable; `rating` is 1-3 stars, not 1-5;
+`flow`/`dry_time` are scaled values, not booleans.** A pen can't be written with unless a nib is
+actually in it, so every real inking has one — no nullable case (this corrects an earlier,
+still-wrong intermediate fix that only addressed the "stock nib" assumption without removing
+nullability outright). `flow`/`dry_time` were originally lumped into the same
+boolean-checkbox redesign as `feathering_observed`/`sheen_observed`, but they're scaled
+qualities, not yes/no occurrences of something happening — fixed to
+`enum(high/medium/low)`, consistent with every other scaled field in the schema.
+
+**2026-07-08 — `purchases.vendor_id` is nullable; `updated_at` added.** Secondhand pens are
+usually bought from an individual (a one-time private sale), not a recurring business worth a
+permanent `vendors` row — forcing every private-party purchase through the controlled list was
+genuine friction for a case that doesn't recur. `notes` covers "who" when `vendor_id` is unset.
+`updated_at` was simply missing (`created_at` only), inconsistent with every other table.
+
+**2026-07-08 — `users`/`sessions` and `import_runs` added — both real gaps, not additions.**
+Auth was named as a Stack-level decision (`project-plan.md`: "lightweight session-cookie, single
+seeded user") but never actually scheduled into any phase or given a schema at all — caught by
+asking "what's missing overall," not by vision.md cross-referencing, since it was never in
+vision.md to begin with. Scheduled to **Phase 2** step 1, before deploy plumbing — nothing
+should ship reachable without the session gate already in place, even behind Tailscale's
+private-network boundary. `import_runs` is a lightweight audit log (`operation_type`, `mode`,
+`report_summary` json, `run_at`) for the now-four distinct import/refresh operations, each
+written to at the end of every dry-run/commit — real record-keeping given how much judgment each
+one involves, not just nice-to-have. Drizzle's own migration-tracking table is separate from
+both of these and needs no design — it's infrastructure `drizzle-kit`/`migrate()` manage
+automatically, not a table that belongs in the app's own Data Model.
+
+**2026-07-08 — No improvement backlog in this file.** Was previously structured as "decision log
+for decisions made; improvement backlog for things noticed but not acted on" — a known
+anti-pattern from get-clear, where the backlog section degrades into a todo list embedded in
+what's supposed to be a pure decision record. Removed. Something noticed but not yet decided
+gets a GitHub issue or a line in `docs/punch-list.md`, not a section here.

@@ -87,6 +87,11 @@ conversation turn out to need different answers — worth separating clearly:
      spelling similarity to the canonical value — "Namiki" for "Pilot," "Journaler"
      for the "Cursive Italic" nib shape — curated from Ken's own domain knowledge,
      never computed.
+   - `import_runs` — audit log (`operation_type`, `mode`, `report_summary` json,
+     `run_at`). The catalog import and color-refresh CLIs (steps 6/8 below) each
+     write a row here at the end of every dry-run or commit — a real record of when
+     each judgment-heavy operation last ran and what it did, not just nice-to-have
+     given how much review goes into each one.
    *Gate:* integration test against a real temp-file SQLite instance (not a fake),
    migrated via the real generated migration file — asserts foreign key enforcement,
    the unique constraints, and alias→canonical resolution across all nine aliasable
@@ -238,11 +243,14 @@ conversation turn out to need different answers — worth separating clearly:
    deliberately including exact-duplicate, near-duplicate (typo/spacing), and
    brand-drift cases — not Ken's live export. This is how "no live external state"
    holds here: the import logic never needs the real file to pass CI.
+   Every dry-run and commit writes a row to `import_runs` (operation_type=
+   catalog_import) — the report summary, not the full report file, so there's a
+   queryable history of when imports ran and what they did.
    *Gate:* unit tests for normalization and duplicate-detection/similarity-scoring
    (fixture cases with known expected categorization); integration test for the
    commit-from-reviewed-report path against a real temp-file SQLite, including the
-   refusal case (unreviewed flagged row → commit rejected) and the backup-file-created
-   assertion.
+   refusal case (unreviewed flagged row → commit rejected), the backup-file-created
+   assertion, and the `import_runs` row being written.
 
 7. **FPC import — Ken's real run.** Not executed by Claude as part of this phase —
    entirely Ken's call, on his own schedule, against whatever export he currently has.
@@ -287,9 +295,11 @@ conversation turn out to need different answers — worth separating clearly:
      import.
    - Ink-only — `pens.color` is FPC's resin/material *name* (a label), not a
      measured value, so this refresh concept doesn't apply there.
+   - Same `import_runs` logging as the main import (operation_type=color_refresh).
    *Gate:* unit tests for the diff-report logic against fixture CSVs (changed value,
    unchanged value, unmatched row); integration test for the commit path asserting
-   only `color_fpc` changes on a matched row and nothing else on that ink is touched.
+   only `color_fpc` changes on a matched row, nothing else on that ink is touched,
+   and the `import_runs` row is written.
 
 ## Deferred columns — why, and where they actually land
 
@@ -310,8 +320,9 @@ exists — Phase 4, not here.
 
 ## Definition of done
 
-`brands`/`lines`/`models`/`aliases`/`pens`/`inks`/`nibs`/`tags` schema exists, generated
-via `drizzle-kit` with the migration files committed and CI's drift check green. The FPC
+`brands`/`lines`/`models`/`aliases`/`pens`/`inks`/`nibs`/`tags`/`import_runs` schema
+exists, generated via `drizzle-kit` with the migration files committed and CI's drift
+check green. The FPC
 import CLI exists (catalog import and the separate color-refresh mode both), is tested
 against fixture CSVs, and is ready for Ken to run against his real export whenever he
 chooses — **actually populating real data is not part of this phase's done-ness**, it's

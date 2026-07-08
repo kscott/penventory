@@ -156,7 +156,8 @@ material_id             → nib_materials
 purity                  enum(9K / 14K / 18K / 21K / 22K)   (karat — simple constrained value,
                                     not a controlled-list table — small, stable, standardized set)
 base_size                enum(#5 / #6 / #8)   (nib housing size — same reasoning as purity)
-point_size               enum(EF / F / FM / MF / F/M / M / OM / CM / B / BB / BBB / XXXF)
+point_size               enum(EF / F / FM / MF / F/M / M / OM / CM / B / BB / BBB / XXXF /
+                            1.0 / 1.1 / 1.4 / 1.5)
                           — simple constrained value, confirmed against Ken's real FPC
                             data. "FM", "MF", and "F/M" are THREE valid, distinct
                             values — Pilot's Fine-Medium, Sailor's Medium-Fine, and
@@ -164,7 +165,13 @@ point_size               enum(EF / F / FM / MF / F/M / M / OM / CM / B / BB / BB
                             typos of each other. This is exactly why point_size is a
                             simple constrained value and not a controlled-list/fuzzy-
                             alias table: a fuzzy matcher would have actively mis-
-                            flagged FM/MF as near-duplicates of each other.
+                            flagged FM/MF as near-duplicates of each other. The mm
+                            values (1.0/1.1/1.4/1.5) are the same concept as the
+                            letter-code values — nib width — just the stub/italic
+                            convention instead of the round-nib convention; confirmed
+                            against real rows like "1.1 Stub" and "1.1 14K Stub".
+                            Absorbs what a separate `line_width` field used to cover
+                            (dropped — redundant once mm widths live here).
 shape_id                 → nib_shapes   (what the tip currently IS — see Controlled lists above)
 finish_id                 → finishes   (plating color — Black PVD, Rose Gold, etc. Same table
                                           pens.trim_color_id points at; same real-world
@@ -179,11 +186,8 @@ grind_description         text     (freeform elaboration, distinct from custom_n
                                       noun label)
 nibmeister_id             → vendors  (who performed the grind, if known — see Controlled lists)
 ground_on                 date
-line_width                string   (free text/measured — e.g. "1.1mm"; not a fixed set)
-line_variation             string   (free text/measured, same reasoning as line_width)
-feedback                   enum(values TBD)   (texture feedback — small ordered scale, exact
-                                                 set not yet confirmed with Ken)
-wetness                    enum(values TBD)   (same reasoning as feedback)
+feedback                   enum(high / medium / low)   (texture feedback)
+wetness                    enum(high / medium / low)
 notes                      text
 created_at / updated_at
 ```
@@ -223,9 +227,11 @@ color_fpc            string    (hex — FPC's listed value. NOT a permanent one-
 color_swatch          string    (hex, nullable — swatch-photo-extracted value, populated by
                                   Phase 3's photo pipeline)
 color_colorimeter      string   (hex, nullable — colorimeter-measured value, populated from a
-                                  separate data source, `colorimeter.csv` — not yet scoped to a
-                                  phase; needs its own import step, most naturally alongside
-                                  Phase 3's swatch pipeline)
+                                  separate data source, `colorimeter.csv`. Imported in **Phase
+                                  4**, not Phase 3 — reuses the more refined match/diff/review
+                                  import pattern established by then (currently_inked.csv's
+                                  fuzzy matching, color_fpc's diff-reviewed refresh), rather than
+                                  bolting a one-off importer onto Phase 3's photo work.)
 color_community        string   (hex, nullable — from an external source like InkSwatch or
                                   Mountain of Ink; vision doc explicitly welcomes these as
                                   additional cross-references)
@@ -236,24 +242,23 @@ color_override_source   enum(fpc / swatch / colorimeter / community)  (nullable 
                                   "corrected hex" idea actually is — not a fifth stored hex
                                   value, a pointer at one of the four real ones.)
 color                — COMPUTED, not stored. "Effective" color resolved by a lookup service at
-                        read time: color_override_source's target if set, otherwise a default
-                        precedence among whatever's actually populated, falling back to
-                        color_fpc (the only field guaranteed to exist for every ink). This is
-                        what Phase 2's browse views and near-dupe clustering actually use as
-                        "the ink's color." Default precedence order (colorimeter vs. swatch when
-                        neither is manually overridden) still open — needs Ken's call.
+                        read time: color_override_source's target if set, otherwise default
+                        precedence **swatch → colorimeter → fpc** among whatever's actually
+                        populated, falling back to color_fpc (the only field guaranteed to exist
+                        for every ink). This is what Phase 2's browse views and near-dupe
+                        clustering actually use as "the ink's color."
 color_family          — COMPUTED, not stored. Derived from the effective `color` via Phase 2's
                         color-family bucketing service, same mechanism as the Color Family
                         browse view. Documented here explicitly so it doesn't get rebuilt as a
                         tag by mistake — vision.md is explicit that color family is "a real
                         structured attribute... not a tag."
-sheen                enum(H / M / L)
+sheen                enum(high / medium / low)
 shimmer              boolean
-shading              enum(H / M / L)
+shading              enum(high / medium / low)
 permanence            boolean
-wetness               enum(values TBD)   (small ordered scale, exact set not yet confirmed)
-flow                  enum(values TBD)   (distinct from wetness — both real, independent
-                                            properties; exact set not yet confirmed)
+wetness               enum(high / medium / low)
+flow                  enum(high / medium / low)   (distinct from wetness — both real, independent
+                                           properties)
 used                  boolean  — COMPUTED: true if ≥1 inking ledger entry exists (Phase 4)
 swatched              boolean  — COMPUTED: true if a swatch photo/composite exists (Phase 3)
 notes                 text
@@ -264,18 +269,24 @@ created_at / updated_at
 
 ### purchases
 Shared across pens, inks, and nibs. **This is the multi-entry history** — ink rebuys and nib
-grinds/modifications each get their own row here, not a flat field on the parent.
+grinds/modifications each get their own row here, not a flat field on the parent. `vendor_id`
+is **nullable** — a real, common case: secondhand pens are usually bought from an individual
+(a forum classified, a one-time private sale), not a recurring business worth adding to the
+`vendors` controlled list. Leave `vendor_id` unset and use `notes` for "who," rather than
+forcing every one-off private seller through the same mechanism as PenRealm/Kirk Speer, which
+are genuinely recurring, worth-tracking entities.
 ```
 id
 purchasable_type     enum(pen / ink / nib)
 purchasable_id        integer
-vendor_id             → vendors
+vendor_id             → vendors (nullable — see above)
 date_ordered           date
 date_delivered          date
 price                   decimal
 currency                string   (default USD)
-notes                   text     (e.g. "came bundled with [pen]" — see §5.7)
-created_at
+notes                   text     (e.g. "came bundled with [pen]" — see §5.7; or who a
+                                    private-party seller was, when vendor_id is unset)
+created_at / updated_at
 ```
 
 ### inkings
@@ -289,11 +300,12 @@ silently discards whichever reason didn't "win").
 id
 pen_id                  → pens
 ink_id                  → inks
-nib_id                  → nibs      (nullable = not specified for this inking; NOT "stock
-                                       nib" — which nib is "stock" isn't well-defined once a
-                                       swap has happened. Source of truth for "what nib was in
-                                       this pen on this date" is pen_nibs's install/remove
-                                       history, not this field's nullability.)
+nib_id                  → nibs      (**required, not nullable** — a pen can't be written with
+                                       unless a nib is actually installed, so every real inking
+                                       has one. NOT an implicit "stock nib" either — which nib is
+                                       "stock" isn't well-defined once a swap has happened; this
+                                       is whichever specific nib was actually in the pen,
+                                       consistent with pen_nibs's install/remove history.)
 started_on               date
 ended_on                  date       (null = still loaded)
 ended_ran_dry             boolean
@@ -301,9 +313,14 @@ ended_disliked            boolean
 ended_needed_pen          boolean
 ended_ink_issue           boolean
 end_note                  text       (freeform, alongside the checkboxes)
-rating                    integer    (1-5, null = unrated)
-flow_good                 boolean
-dry_time_good             boolean
+rating                    integer    (1-3 stars, null = unrated)
+flow                      enum(high / medium / low)   (a scaled quality, not an occurrence — unlike
+                                               feathering/sheen below, which either happened or
+                                               didn't)
+dry_time                  enum(high / medium / low)   (high = long time to dry (slow); low = fast
+                                               to dry. Direction stated explicitly here since
+                                               "high/low" is ambiguous for a time concept
+                                               without it.)
 feathering_observed       boolean
 sheen_observed            boolean
 performance_note          text       (freeform, alongside the checkboxes)
@@ -371,6 +388,31 @@ input_context          json     (what was asked)
 cited_record_ids       json     (which inkings/pens/inks/tags the response drew on)
 sample_size            integer
 response_summary       text
+created_at
+```
+
+### users / sessions
+Named as a Stack-level decision ("lightweight session-cookie, single seeded user") but never
+actually scheduled into a phase or given a schema — a real, total gap, not a small oversight.
+Minimal, since there's exactly one user, ever, manually seeded — no registration flow, no
+password reset, no multi-user anything.
+```
+users:    id, username, password_hash, created_at
+sessions: id, user_id → users, session_token (unique), expires_at, created_at
+```
+
+### import_runs
+Audit log for the now-four distinct import/refresh operations (catalog import, FPC color
+refresh, `colorimeter.csv` import, `currently_inked.csv` historical import) — each involves
+real judgment (Ken's reviewed decisions), so a record of when each last ran and what it did is
+worth having, not just nice-to-have.
+```
+id
+operation_type      enum(catalog_import / color_refresh / colorimeter_import /
+                       historical_inkings_import)
+mode                 enum(dry_run / commit)
+report_summary       json     (counts — new / skipped / aliased / merged, per the reviewed report)
+run_at               datetime
 created_at
 ```
 

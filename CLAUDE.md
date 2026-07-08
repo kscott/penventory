@@ -29,10 +29,12 @@ Read these every session, without exception:
 - `docs/PRD.md` — the product itself, generated from `vision.md`.
 - `docs/project-plan.md` — the technical translation: stack, architecture, testing discipline,
   data model, phases, containerization, infrastructure.
-- `docs/phase0-plan.md` — current phase, ordered steps, gate per step. Superseded by a
-  `docs/phaseN-plan.md` for whichever phase is active once Phase 0 closes.
+- `docs/phase0-plan.md` — current phase, ordered steps, gate per step. `docs/phase1-plan.md`
+  through `phase6-plan.md` cover the phases after it, planned in full before Phase 1 execution
+  starts — same ordered-steps-with-gates treatment.
 - `ARCHITECTURE.md` — decision log. How continuity holds across sessions without re-deriving
-  settled decisions.
+  settled decisions. Decisions only, never a todo list — see `docs/punch-list.md` for small
+  one-off reminders, and GitHub issues for the real backlog.
 
 Raw FPC export data and the prototype color-clustering tooling that inspired this project
 (`gen_inks.py` and friends) live at `~/Notes/personal/ink-collection/` — not in this repo. That

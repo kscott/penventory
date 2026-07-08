@@ -23,11 +23,15 @@ the two dashboard views the vision doc confirmed as worth keeping.
    easy override. `vendor_id` is a foreign key into Phase 1's `vendors` controlled
    list (not free text) — the same table `nibs.nibmeister_id` already points at, so
    a purchase from "PenRealm" and a grind by "Kirk Speer" resolve to one entity, not
-   two disconnected strings.
+   two disconnected strings. `vendor_id` is **nullable** — secondhand pens are
+   usually bought from an individual (a one-time private sale), not a recurring
+   business worth adding to the controlled list; `notes` covers "who" when
+   `vendor_id` is left unset, rather than forcing every one-off seller through the
+   same mechanism as a real recurring vendor.
    *Gate:* one parametrized test suite covering all three purchasable types through
-   the same service — not three near-duplicate test files. This is the "shared
-   structure, not three copies" principle from the vision doc, enforced in the test
-   shape too.
+   the same service — not three near-duplicate test files (the "shared structure,
+   not three copies" principle from the vision doc, enforced in the test shape too),
+   including a case with `vendor_id` null.
 
 3. **Ink rebuy / bundled-ink $0 entries.** Purchase-history list surfaced on the ink
    record; bottle count = purchase-row count (answers "how many bottles do I actually
@@ -35,34 +39,36 @@ the two dashboard views the vision doc confirmed as worth keeping.
    ink arriving with a pen.
    *Gate:* unit test for the bottle-count query against fixture purchase rows.
 
-4. **Inkings ledger.** Start/End lifecycle, `rating` (1–5, nullable). Performance and
-   end-reason are **discrete boolean columns, not an enum or free text** — this is a
-   direct fix, not the original design. Vision doc explicitly calls these
-   "checkboxes" (plural — a cleaning could involve *both* "ran dry" and "ink issue"
-   at once), but the field that shipped in earlier drafts of this schema was a
-   single `end_reason` string (forces one choice, silently discards whichever reason
-   didn't "win") and a single `performance_notes` text blob (the checkboxes existed
-   only as a code comment, never real columns — reporting on any of it meant
-   unreliable string-matching against prose, not real queries). Fixed:
-   `ended_ran_dry` / `ended_disliked` / `ended_needed_pen` / `ended_ink_issue`
-   (independently true/false, plus `end_note` freeform text alongside), and
-   `flow_good` / `dry_time_good` / `feathering_observed` / `sheen_observed`
-   (independently true/false, plus `performance_note` freeform text alongside). Any
-   combination is now directly filterable/groupable (`WHERE feathering_observed =
-   true`, `WHERE ended_ran_dry = true AND ended_ink_issue = true`) with nothing
+4. **Inkings ledger.** Start/End lifecycle, `rating` (1-3 stars, nullable). `nib_id` is
+   **required** — a pen can't be written with unless a nib is actually installed, so
+   every real inking has one. Performance and end-reason are **discrete boolean
+   columns, not an enum or free text** — this is a direct fix, not the original
+   design. Vision doc explicitly calls these "checkboxes" (plural — a cleaning could
+   involve *both* "ran dry" and "ink issue" at once), but the field that shipped in
+   earlier drafts of this schema was a single `end_reason` string (forces one
+   choice, silently discards whichever reason didn't "win") and a single
+   `performance_notes` text blob (the checkboxes existed only as a code comment,
+   never real columns — reporting on any of it meant unreliable string-matching
+   against prose, not real queries). Fixed: `ended_ran_dry` / `ended_disliked` /
+   `ended_needed_pen` / `ended_ink_issue` (independently true/false, plus `end_note`
+   freeform text alongside), and `feathering_observed` / `sheen_observed`
+   (independently true/false — genuine yes/no occurrences) alongside `flow` /
+   `dry_time` (`enum(high/medium/low)` — scaled qualities, not occurrences, so not
+   booleans like the other two; `dry_time`'s direction stated explicitly since
+   high/low is ambiguous for time without it), plus `performance_note` freeform text.
+   Any combination is now directly filterable/groupable (`WHERE feathering_observed
+   = true`, `WHERE ended_ran_dry = true AND ended_ink_issue = true`) with nothing
    depending on parsed prose. **`used` computed column added by migration here** —
    its dependency (`inkings`) now exists (see Phase 1's "Deferred columns" note).
    This is the core ledger feature.
    *Gate:* unit tests for the lifecycle state machine itself (can't End before Start,
-   can't Start a pen/nib that's already actively inked without ending the prior one,
-   etc.); unit tests asserting multiple checkbox columns can independently be true on
-   the same row (the specific regression this redesign exists to prevent); plus the
-   full slice tiers.
+   can't Start without a `nib_id`, can't Start a pen/nib that's already actively
+   inked without ending the prior one, etc.); unit tests asserting multiple checkbox
+   columns can independently be true on the same row (the specific regression this
+   redesign exists to prevent); plus the full slice tiers.
 
-   **Still open, not yet resolved:** where a "Mid-use" note (vision doc's third
-   lifecycle moment, alongside Start/End) actually lives — there's currently no
-   place for multiple dated notes over one inking's life. `observations.inking_id`
-   (nullable) is a proposed answer, not yet confirmed — see `project-plan.md`'s
+   "Mid-use" notes (vision doc's third lifecycle moment, alongside Start/End) land
+   via `observations.inking_id` — see step 6 below and `project-plan.md`'s
    `observations` table.
 
 5. **Historical inkings import from `currently_inked.csv`** (deferred here from Phase 1

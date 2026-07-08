@@ -19,8 +19,11 @@ Read in this order to reconstruct full context:
 3. `docs/project-plan.md` — the technical translation: stack, architecture, testing discipline,
    data model, feature phases, containerization, hosting/GitOps.
 4. `docs/phase0-plan.md` — current phase, ordered steps, and the testing gate each step has to
-   clear.
-5. `ARCHITECTURE.md` — decision log, updated as structural decisions land.
+   clear. `docs/phase1-plan.md` through `phase6-plan.md` cover the phases after it, same
+   ordered-steps-with-gates treatment, planned in full before Phase 1 execution starts.
+5. `ARCHITECTURE.md` — decision log, updated as structural decisions land. Decisions only, not a
+   todo list — see `docs/punch-list.md` for small one-off notes, and GitHub issues for real
+   backlog.
 
 ## Data sources
 
