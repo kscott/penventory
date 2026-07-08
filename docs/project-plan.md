@@ -227,11 +227,36 @@ Ink photos carry the existing three-source composite pipeline (swatch + colorime
 value). Pen photos are evaluated point-in-time for aesthetic-pairing suggestions — nothing
 extracted or stored beyond the photo itself (see vision doc §Photos).
 
+### ai_suggestion_logs
+Append-only provenance log for Phase 5's pairing-suggestion features — never joined into or
+blended with `inkings`, notes, or ratings. This is what makes the vision doc's "AI-derived
+content stays strictly separate from what Ken enters himself" rule concrete rather than a
+policy with nowhere to live.
+```
+id
+intent                 string   (old_favorite / something_new / find_match / aesthetic_match)
+input_context          json     (what was asked)
+cited_record_ids       json     (which inkings/pens/inks/tags the response drew on)
+sample_size            integer
+response_summary       text
+created_at
+```
+
+**Note on `used` / `swatched`:** listed above as ink columns, but neither can exist from
+Phase 1 — both are computed from tables that don't exist yet. `used` is added by migration in
+**Phase 4**, once `inkings` exists (true if ≥1 ledger entry exists). `swatched` is added by
+migration in **Phase 3**, once `photos` exists (true if a swatch photo/composite exists). See
+`docs/phase1-plan.md`'s "Deferred columns" section for the full reasoning. Same logic applies
+to `pen_nibs` and `purchases` — both wait for Phase 4, the phase that gives them meaning.
+
 ---
 
 ## Feature phases
 
 Sequencing follows the "visuals first" decision — see vision doc's Build Sequencing section.
+Each phase below is summarized at a paragraph level; full ordered steps with a gate per step
+live in `docs/phaseN-plan.md` (`phase1-plan.md` through `phase6-plan.md`), same treatment
+`phase0-plan.md` already got.
 
 ### Phase 0 — Setup
 - Repo scaffold, TypeScript strict mode, ESLint/Prettier

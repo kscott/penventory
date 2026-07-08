@@ -37,6 +37,41 @@ project documentation, and not superseded by this repo existing.
 **2026-07-08 — Dev workflow: one-issue-one-branch, close before merge.** Same process as
 get-clear. Single-user doesn't mean less rigor.
 
+**2026-07-08 — Phases 1–6 planned in full before any code beyond Phase 0.** Ken wanted to see
+how the build upholds the stated principles before writing product code. Produced
+`docs/phase1-plan.md` through `docs/phase6-plan.md` (ordered steps, gate per step, same
+treatment `phase0-plan.md` got), expanding `project-plan.md`'s paragraph-level phase
+descriptions. Filled several gaps `project-plan.md` left open:
+- `/healthz` + `/metrics` (Containerization wanted both, no phase said when) → start of
+  Phase 1, since Phase 0 is frozen.
+- GHCR push + Portainer `secondo/personal-apps` stack wiring (described, not scheduled) →
+  start of Phase 2, the first phase producing something worth running.
+- `used`/`swatched` computed ink columns, listed in the schema as if present from Phase 1 —
+  actually added by migration in Phase 4/Phase 3 respectively, once their dependency
+  (`inkings`/`photos`) exists. Same reasoning applies to `pen_nibs` and `purchases` (Phase 4).
+- New `ai_suggestion_logs` table (Phase 5) — makes "AI-derived content stays strictly
+  separate from what Ken enters" a concrete, queryable fact rather than an unenforced policy.
+
+**2026-07-08 — Local container runtime: `apple/container`, not OrbStack/Docker Desktop.**
+Phase 0 step 6 needed something to verify `docker build` locally on this Mac (no runtime was
+installed at all). Tried OrbStack first (brew cask) — works, but its onboarding defaults to a
+Pro trial banner, an unnecessary licensing question for what's just a dev-loop build check.
+Switched to Apple's own `container` CLI (`brew install container`, v1.1.0): Apache 2.0, fully
+open source, no license tier at all, and it's the native fit for this Mac (Apple Silicon +
+macOS 26 Tahoe, both already true here). It's OCI-compatible — builds/runs the same Dockerfile,
+pulls/pushes the same registries — so nothing about the Dockerfile or CI (which still runs
+`docker build` on GitHub-hosted Ubuntu runners, unchanged) depends on this choice. One
+networking difference worth knowing: each container gets its own routable IP on a private
+subnet rather than Docker's NAT+localhost port-publish — `container run -p` didn't map to
+`localhost` in testing; hitting the container's own IP (`container list` shows it) worked.
+
+**2026-07-08 — Claude accesses Penventory via a Zod-validated HTTP API, not a skill.**
+Resolves the vision doc's explicitly-open question about the technical shape of Claude's
+access. The app itself never calls an LLM — Claude-the-agent is the sole consumer/reasoner
+over the API. Decided at Phase 5 planning because it's load-bearing: it's what keeps every
+Phase 5 service unit-testable with zero live external dependency, per the "no code path may
+require live external system state to test" rule above. Full detail in `docs/phase5-plan.md`.
+
 ## Improvement backlog
 
 Nothing yet — Phase 0 hasn't started.
