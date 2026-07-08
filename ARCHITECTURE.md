@@ -72,6 +72,157 @@ over the API. Decided at Phase 5 planning because it's load-bearing: it's what k
 Phase 5 service unit-testable with zero live external dependency, per the "no code path may
 require live external system state to test" rule above. Full detail in `docs/phase5-plan.md`.
 
+**2026-07-08 — FPC import is a Ken-triggered CLI with dry-run review, not something Claude
+runs.** Corrects an earlier draft of `phase1-plan.md` that had the real import as a step
+Claude executes while working through Phase 1. Ken's call: he provides the export file, on
+his own schedule, and controls whether/what gets committed. Concretely: a dry-run pass parses
++ normalizes + runs duplicate detection and writes a review report; nothing writes to the
+database until Ken's reviewed every flagged row and re-runs with `--commit`, which takes an
+automatic pre-write backup. Populating real data is explicitly outside each phase's CI-gated
+definition of done.
+
+**2026-07-08 — FPC import identity is fuzzy, not ID-based — confirmed against the real
+export.** Checked Ken's actual `collected_inks.csv`/`collected_pens.csv` (260/282 rows): no
+per-record ID exists in either. Natural keys are composite (Brand+Line+Name+Type for inks,
+Brand+Model+Nib+Color+Material+Trim for pens), so duplicate detection has to be
+similarity-scored, not exact-match — "mistakes happen, data isn't always clean" (Ken).
+Ken's existing prototype (`import_inks.py`) avoids this by dropping and recreating its table
+every run; that doesn't transfer to Penventory, since real ledger/tag/purchase data gets
+attached to catalog rows that a wipe-and-reload would orphan. Same fuzzy-matching problem
+recurs harder in Phase 4: `currently_inked.csv` cross-references pens/inks by a reconstructed
+description string, not an ID — deferred there since it needs the catalog and `inkings` table
+both to exist first. See `docs/phase1-plan.md` step 6 and `docs/phase4-plan.md` step 5.
+
+**2026-07-08 — The SQLite database file is never part of the deploy artifact, in any
+environment.** Restates `project-plan.md`'s existing Volumes design as an explicit hard rule
+now that import tooling depends on it: the DB path always points at a persistent volume that
+exists independently of the app image. No install or update — local dev, or the eventual
+homelab deployment — creates, resets, or touches it except through an explicit, Ken-initiated
+action like the import CLI. Local Mac/container work during development is not the real
+production instance; that's the homelab deployment, stood up later.
+
+**2026-07-08 — Schema migrations: authored explicitly, verified in CI, applied
+automatically on startup.** Two different senses of "explicit" needed different answers.
+Authoring is explicit and gated: `drizzle-kit generate` produces committed SQL files, and a
+new CI drift check (folded into the `integration` job) fails if the schema changed without a
+corresponding committed migration. Applying an already-committed, already-reviewed migration
+is automatic on container startup (dev and the eventual homelab deployment both) — standard
+practice for structural, tracked, idempotent changes, and a deliberate contrast with the FPC
+import: that stays Ken-triggered because it's real data with dedup judgment calls made in the
+moment, not a change that was already decided at commit time. Startup takes a backup first
+only when there are pending migrations to apply, not on every routine restart. Full detail in
+`docs/phase1-plan.md`'s Migrations section.
+
+**2026-07-08 — `models` table added for pens; `nibs.brand` and `pens.model` fixed to foreign
+keys.** Two real bugs found by cross-checking the schema against vision.md and against the
+"fat-fingered duplicate" discussion: (1) `nibs.brand` was a free-text string, not a foreign key
+to `brands` like pens and inks have — same spelling-drift risk, no reason for the
+inconsistency, fixed. (2) `pens.model` was free text with no controlled list at all, even
+though vision.md explicitly says Line-style controlled lists "apply to pens and inks both" —
+`project-plan.md`'s original schema never implemented that for pens. Added a `models` table
+(brand-scoped, same shape as `lines`) and `pens.model_id` as a foreign key to it.
+
+**2026-07-08 — Brand/Line/Model duplicate protection lives in a shared repository function,
+not the UI.** A near-duplicate ("Piolt" vs. "Pilot") can't be allowed to silently create a new
+row just because a picker UI existed and nobody happened to look at it — "a fat-fingered typo
+will go into the system and give us dirty data... we can't rely on progressive exposure being
+sufficient" (Ken). Fix: one shared `resolveOrFlag(type, name, brandId?)` function, parametrized
+across brand/line/model rather than three copies, with four outcomes checked in order — exact
+match, known-alias match, fuzzy-similar (flagged, never auto-created), or genuinely new. Both
+the bulk FPC import and any future manual-entry UI call the same function, so the guarantee
+holds regardless of whether the UI is well-designed. Known-alias resolution (e.g. "Namiki" →
+"Pilot", a real-world sub-brand name with zero string similarity to "Pilot" — not something any
+similarity algorithm could infer) uses a new polymorphic `aliases` table (same pattern as
+`taggables`/`purchases`), curated from Ken's own domain knowledge, not computed. Full detail in
+`docs/phase1-plan.md` steps 2-3 and 6.
+
+**2026-07-08 — Controlled-list treatment extended from brand/line/model to five more fields:
+`pen_materials`, `nib_materials`, `finishes`, `filling_systems`, `nib_shapes`, `vendors`.**
+Same drift problem, same mechanism (`resolveOrFlag` + `aliases`), applied wherever a field is a
+proper name or open-ended category rather than a small closed set. Concretely proven, not
+theoretical: Ken's own real FPC export already has three spellings of "Cartridge/Converter" and
+two of "Pump Filler" in `filling_system`, found by direct inspection. `nib_shapes` merges what
+would have been two separate fields (`tipping_type`, `grind_type`) — same underlying fact ("what
+shape is this tip") regardless of whether it shipped that way, was a factory custom order, or
+was ground later. `vendors` merges `purchases.vendor` and `nibs.nibmeister` — a nibmeister is a
+vendor (paid for a service), and keeping them separate meant one real business (Kirk Speer /
+PenRealm) could show up as two disconnected, unmatchable strings. `pen_materials` and
+`nib_materials` stay separate tables despite both being called "material" — different
+vocabularies (Acrylic/Ebonite vs. Gold/Steel/Titanium) sharing one mechanism, not one table.
+
+**2026-07-08 — Not everything with a fixed vocabulary needs the controlled-list machinery.**
+`purity`, `base_size`, and `point_size` on `nibs` stay plain constrained values (Zod enum/check
+constraint), not controlled-list tables — small, stable, standardized vocabularies where the
+fuzzy-matching machinery would do active harm. Concrete proof: `point_size`'s real data has
+"FM", "MF", and "F/M" as three genuinely distinct, valid values (Pilot/Sailor/Diplomat's own
+conventions for a similar concept), not a typo cluster — a fuzzy matcher would have wrongly
+flagged them as near-duplicates of each other. Lesson generalized: string similarity alone
+doesn't distinguish "typo of the same thing" from "different vendors' names for adjacent but
+distinct things" — that distinction needs domain knowledge (Ken's), which is exactly why the
+constrained-value fields stay simple rather than growing the same fuzzy machinery everywhere.
+
+**2026-07-08 — Nibs are first-class from pen acquisition, tracked as history, not overwritten.**
+A pen's stock nib is a real `nibs` row from the moment it's acquired (not a placeholder), linked
+via `pen_nibs` (install/remove dates). Swapping in a custom nib closes the stock nib's
+`pen_nibs` row and opens a new one for the replacement — the stock nib keeps its full history
+and becomes a nib with no currently-open `pen_nibs` row (a loose nib in storage, exactly the
+case Phase 6's not-yet-designed nib-location tracking is meant to help find). Corrected an
+earlier, wrong assumption that `inkings.nib_id` being null meant "the stock nib" — that
+stops being well-defined the moment a swap happens; the real source of truth for "what nib was
+in this pen on this date" is `pen_nibs`'s history, not a null check on a different table.
+`nibs.brand_id` is nullable for the same reason `point_size` needed real-data grounding: a bare
+point size in FPC's data ("F"/"M"/"B" alone) is a confirmed real case where the manufacturer
+genuinely isn't recorded (Steel, base_size #6, brand unknown) — not a gap to force-fill.
+
+**2026-07-08 — Performance notes and end-reason are discrete boolean columns, not an enum or
+free text.** Vision doc explicitly calls these "checkboxes" (plural — a cleaning could involve
+*both* "ran dry" and "ink issue" at once), and the original schema had neither structured: a
+single `end_reason` string (forces one choice, silently discards whichever reason didn't "win")
+and a single `performance_notes` text blob (checkboxes existed only as a code comment, not real
+columns — reporting on any of it would mean unreliable string-matching against prose). Fixed to
+separate boolean columns per checkbox (`ended_ran_dry`, `ended_disliked`, `ended_needed_pen`,
+`ended_ink_issue`; `flow_good`, `dry_time_good`, `feathering_observed`, `sheen_observed`), plus
+one freeform text field alongside each group for anything the checkboxes don't capture. Full
+detail in `docs/phase4-plan.md` step 4.
+
+**2026-07-08 — `finishes` (renamed from `trim_colors`) is shared by pens and nibs.** Nib finish
+(Black PVD, Rose Gold, etc. — confirmed real, distinct from base material) is the same
+real-world vocabulary as a pen's trim color, not a separate concept. `pens.trim_color_id` and
+`nibs.finish_id` both point at one `finishes` table — same reuse pattern as `maker_id` →
+`brands` and `nibmeister_id` → `vendors`, rather than a fourth near-identical controlled list.
+
+**2026-07-08 — Ink color is four independent stored fields plus one computed "effective" value,
+not one field that gets overwritten.** Corrected an earlier draft that would have copied FPC's
+value into a general-purpose `color` field at import time. Ken's objection: FPC's own color
+value is itself crowdsourced across all its users and can legitimately change over time — "FPC
+lives in FPC," never silently blended into another field. Fixed: `color_fpc`, `color_swatch`,
+`color_colorimeter`, `color_community` are four independent, nullable-except-fpc stored values;
+`color_override_source` is Ken's explicit pointer at which one is authoritative for a specific
+ink (this is what "corrected hex" actually is — a pointer, not a fifth stored value); `color`
+itself is COMPUTED at read time by a lookup-hierarchy service, never stored or duplicated — same
+pattern already used for `used`/`swatched`/`color_family`. Default precedence order when nothing
+is manually overridden is still open. `color_fpc` gets its own explicit, narrow refresh
+operation (`phase1-plan.md` step 8) — matched-only, diff-reviewed, updates only that one field —
+since re-syncing a legitimately-changed FPC value is a different, safer operation than the main
+import's create-new-rows path.
+
+**2026-07-08 — `observations.inking_id` confirmed: one table for standalone notes and "Mid-use"
+notes both.** Resolves the vision doc's third lifecycle moment (Start/Mid-use/End) that had no
+home. `subject_type`/`subject_id` and `inking_id` are mutually exclusive on a given row — an
+inking-attached observation doesn't need its own subject reference, since the inking it's
+attached to already implies which pen/ink/nib it's about. Multiple observations can attach to
+one inking over its life.
+
+**2026-07-08 — Constrained-value fields use `enum(...)` notation, not `string (...)`.** The
+latter read identically to genuinely free-text fields (`notes`, `custom_name`) and caused real
+confusion (Ken: "the string designation confuses"). Applied across every constrained field in
+`project-plan.md` — `size_category`, `condition`, `ownership_state`, `purity`, `base_size`,
+`point_size`, `type`, `sheen`, `shading`, and all polymorphic type-discriminator columns
+(`purchasable_type`, `subject_type`, `owner_type`, `kind`, `aliasable_type`, `taggable_type`,
+`intent`). A few fields (`feedback`, nib `wetness`, ink `wetness`/`flow`) are marked
+`enum(values TBD)` — confirmed as constrained in concept, but the exact value sets were never
+nailed down with Ken and shouldn't be invented.
+
 ## Improvement backlog
 
 Nothing yet — Phase 0 hasn't started.

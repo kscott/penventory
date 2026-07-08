@@ -76,50 +76,115 @@ Purchase history is now a shared table across pens, inks, and nibs (a real chang
 original plan, driven by §5.4 of the vision doc: ink and nib both need *multiple* purchase
 events over their life, not one).
 
-### brands / lines
-Canonical lookup tables — the whole reason FPC's free-text Brand/Line drifted into duplicate
-spellings. `lines` scoped to a brand (a Line belongs to its Brand).
+### Controlled lists (all share one mechanism)
+Every field below with real-world naming-drift risk (fat-fingered typos, spelling variants,
+proprietary names for the same underlying thing) uses the same mechanism: a canonical table,
+`resolveOrFlag(type, name, scopeId?)` for lookup/creation, and the polymorphic `aliases` table
+for known alternate names with zero string similarity to the canonical value (e.g. "Namiki" for
+"Pilot," "Journaler" for the "Cursive Italic" nib shape). Full reasoning and the four-outcome
+resolution order (exact match / alias match / fuzzy-flagged / genuinely new) in
+`phase1-plan.md` step 3.
 ```
-brands:  id, name
-lines:   id, brand_id, name
+brands:          id, name (unique)
+lines:           id, brand_id → brands, name
+models:          id, brand_id → brands, name           (pen equivalent of lines)
+pen_materials:   id, name (unique)                       (pen body material: Acrylic, Ebonite...)
+nib_materials:   id, name (unique)                       (Gold, Steel, Titanium...)
+finishes:        id, name (unique)                       (plating/trim color — Gold-tone,
+                                                            Rhodium/Silver, Rose Gold, Black PVD.
+                                                            Shared by pens.trim_color_id AND
+                                                            nibs.finish_id — same real-world
+                                                            vocabulary, not two lists. Reuse
+                                                            pattern, same as maker_id → brands.)
+filling_systems: id, name (unique)                       (real drift confirmed in Ken's own FPC
+                                                            export — "Cartridge/Converter" had
+                                                            three spellings)
+nib_shapes:      id, name (unique)                       (Round/Stub/Italic/Oblique/Cursive
+                                                            Italic/Architect/Needlepoint/Music/
+                                                            Naginata Togi... merges what used to
+                                                            be separate tipping_type + grind_type
+                                                            fields — same underlying fact, "what
+                                                            shape is this tip," regardless of
+                                                            whether it shipped that way or was
+                                                            ground later)
+vendors:         id, name (unique)                       (merges what used to be separate
+                                                            purchases.vendor + nibs.nibmeister
+                                                            strings — a nibmeister IS a vendor,
+                                                            someone paid for a service; keeping
+                                                            them separate meant the same real
+                                                            person/business, e.g. Kirk Speer /
+                                                            PenRealm, could show up as two
+                                                            disconnected strings)
+aliases:         id, alias, aliasable_type enum(brand/line/model/pen_material/nib_material/
+                     finish/filling_system/nib_shape/vendor), aliasable_id,
+                     unique(alias, aliasable_type)
 ```
+`pen_materials` and `nib_materials` are deliberately separate tables, not one shared
+"materials" list — different vocabularies (Acrylic/Ebonite vs. Gold/Steel/Titanium), same
+mechanism. `maker` (see `inks` below) is **not** in this list — it reuses `brands` directly via
+a foreign key, since a maker is the same *kind* of entity as a brand, just in a secondary role.
 
 ### pens
 ```
 id
-brand_id            → brands
-model                string
-color                string   (FPC's resin/material name — NOT a real color value, see vision doc)
-material             string
-trim_color            string
-filling_system        string
-size_category         string   (pocket / standard / oversized)
-condition             string   (new / vintage / second-hand)
-accessories_note      text     ("came with: sleeve, pin; original box")
-notes                 text
-ownership_state        string  (active / retired / rehomed)
-ownership_changed_on   date
+brand_id              → brands
+model_id               → models
+color                  string   (FPC's resin/material NAME, e.g. "Primary Manipulation 5.5" —
+                                  NOT a real color value or a category; genuinely free text,
+                                  high-cardinality, not a controlled-list candidate)
+material_id             → pen_materials
+trim_color_id            → finishes
+filling_system_id        → filling_systems
+size_category            enum(pocket / standard / slim / oversized)
+condition                enum(new / vintage / second-hand)
+accessories_note         text     ("came with: sleeve, pin; original box")
+notes                    text
+ownership_state           enum(active / retired / rehomed)
+ownership_changed_on      date
 created_at / updated_at
 ```
 
 ### nibs
-Standalone objects — owned independently, moveable between pens.
+Standalone objects — owned independently, moveable between pens. `brand_id` is **nullable** —
+confirmed real case: a bare point size in FPC's Nib field (just "F"/"M"/"B", no other
+qualifiers) means Steel, base_size #6, and no recorded manufacturer (JoWo vs. Bock vs. other —
+genuinely not knowable from the data). Brand stays unset until Ken resolves it by hand.
 ```
 id
-brand                string
-base_size            string
-tipping_type         string
-flexibility          string
-is_custom_grind      boolean
-grind_type           string
-grind_description    text
-nibmeister           string
-ground_on            date
-line_width           string
-line_variation       string
-feedback             string
-wetness              string
-notes                text
+brand_id              → brands (nullable — see above)
+material_id             → nib_materials
+purity                  enum(9K / 14K / 18K / 21K / 22K)   (karat — simple constrained value,
+                                    not a controlled-list table — small, stable, standardized set)
+base_size                enum(#5 / #6 / #8)   (nib housing size — same reasoning as purity)
+point_size               enum(EF / F / FM / MF / F/M / M / OM / CM / B / BB / BBB / XXXF)
+                          — simple constrained value, confirmed against Ken's real FPC
+                            data. "FM", "MF", and "F/M" are THREE valid, distinct
+                            values — Pilot's Fine-Medium, Sailor's Medium-Fine, and
+                            Diplomat's slash convention (e.g. the Diplomat Viper) — not
+                            typos of each other. This is exactly why point_size is a
+                            simple constrained value and not a controlled-list/fuzzy-
+                            alias table: a fuzzy matcher would have actively mis-
+                            flagged FM/MF as near-duplicates of each other.
+shape_id                 → nib_shapes   (what the tip currently IS — see Controlled lists above)
+finish_id                 → finishes   (plating color — Black PVD, Rose Gold, etc. Same table
+                                          pens.trim_color_id points at; same real-world
+                                          vocabulary, not a nib-specific list)
+custom_name               string   (the specific nibmeister's branded name for this grind, e.g.
+                                      "Journaler" — distinct from shape; feeds the aliases table
+                                      as the alias text once it's linked to a canonical shape)
+is_custom_grind           boolean  (was there a trackable grind event, regardless of who
+                                      performed it — factory custom-order, third-party
+                                      nibmeister, or already ground when acquired)
+grind_description         text     (freeform elaboration, distinct from custom_name's proper-
+                                      noun label)
+nibmeister_id             → vendors  (who performed the grind, if known — see Controlled lists)
+ground_on                 date
+line_width                string   (free text/measured — e.g. "1.1mm"; not a fixed set)
+line_variation             string   (free text/measured, same reasoning as line_width)
+feedback                   enum(values TBD)   (texture feedback — small ordered scale, exact
+                                                 set not yet confirmed with Ken)
+wetness                    enum(values TBD)   (same reasoning as feedback)
+notes                      text
 created_at / updated_at
 ```
 
@@ -138,17 +203,62 @@ notes                text
 id
 brand_id             → brands
 line_id              → lines
-name                 string
-type                 string   (bottle / sample / cartridge)
-color                string   (hex — swatch/colorimeter-derived, see Photos)
-maker                string
-sheen / shimmer / shading / permanence   (fixed properties, not per-inking)
-wetness               string
-flow                  string
-used                  boolean  — COMPUTED: true if ≥1 inking ledger entry exists
-swatched              boolean  — COMPUTED: true if a swatch photo/composite exists
-notes                text
-ownership_state       string   (active / retired / rehomed)
+maker_id             → brands (nullable)   (reuses brands directly, not a separate table — a
+                                              maker is the same kind of entity as a brand, just
+                                              in a secondary role; a brand row may exist only as
+                                              a maker reference and never as a direct brand_id,
+                                              and that's expected)
+name                 string    (the ink's specific product name — free text, high-cardinality,
+                                  not a controlled-list candidate)
+type                 enum(bottle / sample / cartridge)   (kept even though "cartridge"
+                                  doesn't appear in Ken's current export; it's a real FPC-defined
+                                  value and a plausible future purchase)
+color_fpc            string    (hex — FPC's listed value. NOT a permanent one-time snapshot:
+                                  FPC's own color value is itself crowdsourced from all users'
+                                  distinct entries and can legitimately change over time. Updated
+                                  only via an explicit, separate refresh operation — see
+                                  `phase1-plan.md` — never silently overwritten by the main
+                                  import, and never touches color_swatch/color_colorimeter/
+                                  color_override_source or anything else on the row.)
+color_swatch          string    (hex, nullable — swatch-photo-extracted value, populated by
+                                  Phase 3's photo pipeline)
+color_colorimeter      string   (hex, nullable — colorimeter-measured value, populated from a
+                                  separate data source, `colorimeter.csv` — not yet scoped to a
+                                  phase; needs its own import step, most naturally alongside
+                                  Phase 3's swatch pipeline)
+color_community        string   (hex, nullable — from an external source like InkSwatch or
+                                  Mountain of Ink; vision doc explicitly welcomes these as
+                                  additional cross-references)
+color_override_source   enum(fpc / swatch / colorimeter / community)  (nullable — Ken's
+                                  explicit manual pick of which of the four values above is
+                                  authoritative for this specific ink, when the default
+                                  precedence isn't what he wants. This is what the vision doc's
+                                  "corrected hex" idea actually is — not a fifth stored hex
+                                  value, a pointer at one of the four real ones.)
+color                — COMPUTED, not stored. "Effective" color resolved by a lookup service at
+                        read time: color_override_source's target if set, otherwise a default
+                        precedence among whatever's actually populated, falling back to
+                        color_fpc (the only field guaranteed to exist for every ink). This is
+                        what Phase 2's browse views and near-dupe clustering actually use as
+                        "the ink's color." Default precedence order (colorimeter vs. swatch when
+                        neither is manually overridden) still open — needs Ken's call.
+color_family          — COMPUTED, not stored. Derived from the effective `color` via Phase 2's
+                        color-family bucketing service, same mechanism as the Color Family
+                        browse view. Documented here explicitly so it doesn't get rebuilt as a
+                        tag by mistake — vision.md is explicit that color family is "a real
+                        structured attribute... not a tag."
+sheen                enum(H / M / L)
+shimmer              boolean
+shading              enum(H / M / L)
+permanence            boolean
+wetness               enum(values TBD)   (small ordered scale, exact set not yet confirmed)
+flow                  enum(values TBD)   (distinct from wetness — both real, independent
+                                            properties; exact set not yet confirmed)
+used                  boolean  — COMPUTED: true if ≥1 inking ledger entry exists (Phase 4)
+swatched              boolean  — COMPUTED: true if a swatch photo/composite exists (Phase 3)
+notes                 text
+ownership_state        enum(active / retired / rehomed)
+ownership_changed_on   date    (parity with pens — was missing, no reason for the asymmetry)
 created_at / updated_at
 ```
 
@@ -157,48 +267,70 @@ Shared across pens, inks, and nibs. **This is the multi-entry history** — ink 
 grinds/modifications each get their own row here, not a flat field on the parent.
 ```
 id
-purchasable_type     string   (pen / ink / nib)
+purchasable_type     enum(pen / ink / nib)
 purchasable_id        integer
-date_ordered          date
-date_delivered         date
-vendor                string
-price                 decimal
-currency              string   (default USD)
-notes                 text     (e.g. "came bundled with [pen]" — see §5.7)
+vendor_id             → vendors
+date_ordered           date
+date_delivered          date
+price                   decimal
+currency                string   (default USD)
+notes                   text     (e.g. "came bundled with [pen]" — see §5.7)
 created_at
 ```
 
 ### inkings
-The ledger core — pen + ink + nib matched together, with a Start/Mid/End lifecycle.
+The ledger core — pen + ink + nib matched together, with a Start/Mid/End lifecycle. Performance
+and end-reason are both modeled as discrete boolean columns, not an enum or free text — vision
+doc explicitly calls these "checkboxes" (plural, multi-select: a cleaning could involve *both*
+"ran dry" and "ink issue"), and a single text/string field makes structured reporting
+unreliable at best (string-matching against prose) or impossible (a forced single choice
+silently discards whichever reason didn't "win").
 ```
 id
-pen_id                → pens
-ink_id                → inks
-nib_id                → nibs      (null = stock nib)
-started_on            date
-ended_on               date       (null = still loaded)
-end_reason            string     (ran dry / disliked it / needed the pen / ink issue)
-rating                integer    (1-5, null = unrated)
-performance_notes     text       (checkboxes + freeform: flow, dry time, feathering/bleed, shading/sheen)
+pen_id                  → pens
+ink_id                  → inks
+nib_id                  → nibs      (nullable = not specified for this inking; NOT "stock
+                                       nib" — which nib is "stock" isn't well-defined once a
+                                       swap has happened. Source of truth for "what nib was in
+                                       this pen on this date" is pen_nibs's install/remove
+                                       history, not this field's nullability.)
+started_on               date
+ended_on                  date       (null = still loaded)
+ended_ran_dry             boolean
+ended_disliked            boolean
+ended_needed_pen          boolean
+ended_ink_issue           boolean
+end_note                  text       (freeform, alongside the checkboxes)
+rating                    integer    (1-5, null = unrated)
+flow_good                 boolean
+dry_time_good             boolean
+feathering_observed       boolean
+sheen_observed            boolean
+performance_note          text       (freeform, alongside the checkboxes)
 created_at / updated_at
 ```
-
 ### observations
-Standalone dated ledger entries not tied to an active inking (§5.1 — "became my desk pen," a
-condition note, anything worth recording independent of a pairing).
+Standalone dated ledger entries, OR a "Mid-use" note attached to a specific active inking
+(vision doc's third lifecycle moment, alongside Start/End) — one table covers both, since both
+are just "a dated note about something." `subject_type`/`subject_id` and `inking_id` are
+mutually exclusive, never both set on the same row: a standalone observation is about a pen/nib
+directly; an inking-attached one is implicitly about whatever pen/ink/nib that inking already
+references, so there's nothing to duplicate. Multiple observations can attach to the same
+inking over its life (day 3, day 20, ...) — "a collection of reports attached to an inking."
 ```
 id
-subject_type          string    (pen / nib)
-subject_id             integer
-observed_on            date
-note                   text
+subject_type          enum(pen / nib)  (nullable — set only for standalone observations)
+subject_id             integer  (nullable — set only for standalone observations)
+inking_id              → inkings (nullable — set only for inking-attached observations)
+observed_on             date
+note                    text
 ```
 
 ### tags / taggables
 Polymorphic, user-curated only — never auto-generated.
 ```
 tags:       id, name
-taggables:  tag_id, taggable_type (pen/ink/nib), taggable_id
+taggables:  tag_id, taggable_type enum(pen/ink/nib), taggable_id
 ```
 
 ### wishlist_items
@@ -217,9 +349,9 @@ Never deleted on conversion — same "preserved, hidden by default" pattern as o
 ### photos
 ```
 id
-owner_type            string   (pen / ink)
+owner_type            enum(pen / ink)
 owner_id               integer
-kind                   string   (swatch / colorimeter_composite / pen_photo)
+kind                   enum(swatch / colorimeter_composite / pen_photo)
 file_path              string
 created_at
 ```
@@ -234,7 +366,7 @@ content stays strictly separate from what Ken enters himself" rule concrete rath
 policy with nowhere to live.
 ```
 id
-intent                 string   (old_favorite / something_new / find_match / aesthetic_match)
+intent                 enum(old_favorite / something_new / find_match / aesthetic_match)
 input_context          json     (what was asked)
 cited_record_ids       json     (which inkings/pens/inks/tags the response drew on)
 sample_size            integer
