@@ -1,0 +1,17 @@
+node_modules
+.svelte-kit
+build
+.git
+.output
+.vercel
+.netlify
+.wrangler
+coverage
+test-results
+playwright-report
+.env
+.env.*
+*.db
+*.db-wal
+*.db-shm
+.DS_Store
