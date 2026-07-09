@@ -98,9 +98,15 @@ the two dashboard views the vision doc confirmed as worth keeping.
    `pen_nibs`-only fallback still holds for a pen with no inkings.
 
 5. **Historical inkings import from `currently_inked.csv`** (deferred here from Phase 1
-   — see `phase1-plan.md` step 7's note). Extends the same Ken-triggered CLI pattern
-   from Phase 1 (`npm run import:fpc -- --currently-inked <path>`, dry-run report →
-   reviewed decisions → `--commit`), not auto-run by Claude.
+   — see `phase1-plan.md` step 7's note). Same service-logic-plus-local-CLI-harness
+   split as Phase 1 step 6 / Phase 1.1: the parsing/matching/report/commit logic is
+   framework-agnostic service code, proven via a local CLI
+   (`npm run import:fpc -- --currently-inked <path>`, dry-run report → reviewed
+   decisions → `--commit`) — not a production path (see `ARCHITECTURE.md`'s "no
+   shell/SSH to operate the app" rule). A real authenticated web equivalent, matching
+   Phase 1.1's pattern, is a genuine gap this phase's own detailed planning pass needs
+   to close — not designed yet, flagged so it isn't hand-waved when this phase starts.
+   Not auto-run by Claude either way.
 
    The real problem here: `currently_inked.csv`'s `Pen`/`Ink` columns aren't IDs —
    they're reconstructed description strings (e.g.
@@ -140,6 +146,8 @@ the two dashboard views the vision doc confirmed as worth keeping.
 Full ledger lifecycle usable end-to-end. Purchase history (with rebuy/bundled-ink
 handling) and wishlist are both real, not deferred stubs. The two dashboard views from
 the vision doc's Reporting section exist and read live ledger data. The historical
-`currently_inked.csv` import CLI exists and is tested against fixtures — same as
-Phase 1's catalog import, actually running it against Ken's real export is his call,
-on his schedule, not part of this phase's done-ness.
+`currently_inked.csv` import's service logic exists, has a local CLI test harness, and
+is tested against fixtures — same as Phase 1's catalog import, actually running it
+against Ken's real export locally is his call, on his schedule, not part of this
+phase's done-ness; a real authenticated web equivalent is a separate, not-yet-designed
+gap (see step 5 above).

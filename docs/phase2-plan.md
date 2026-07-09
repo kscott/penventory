@@ -2,8 +2,13 @@
 
 Per the vision doc's build-sequencing decision, this is "the actual point of building
 an app" — the visual browsing/reshuffling experience is a source of joy independent of
-any ledger or AI feature. All five views run entirely off `ink.color` hex values
-already populated by Phase 1's FPC import — no photo pipeline dependency.
+any ledger or AI feature. All five views run entirely off `ink.color` hex values —
+real ones, populated via Phase 1.1's web import feature, not Phase 1's local-only CLI
+(see `ARCHITECTURE.md`'s 2026-07-09 entries) — no photo pipeline dependency.
+
+Auth already exists by this point — built in Phase 1.1 (needed there first, since that's
+the first web-reachable feature mutating real data), not repeated here. Every route in
+this phase is gated by it.
 
 Color Family, Color Wheel, Tone, and Brand A–Z are primary/day-one (per vision doc
 §6.4). Near-Dupes is an explicit second wave, listed last here for that reason, not
@@ -11,21 +16,7 @@ because it's less important.
 
 ## Ordered steps
 
-1. **Auth: `users`/`sessions` + login.** Named as a Stack-level decision in
-   `project-plan.md` ("lightweight session-cookie, single seeded user") but never
-   actually scheduled anywhere until this review caught it as a total gap — no
-   schema, no phase step existed for it at all. Belongs here, first, because this is
-   the first phase that puts anything real on the network (step 2 below) — nothing
-   ships reachable without the session gate already in place, even behind
-   Tailscale's private-network boundary (defense-in-depth, not the primary control,
-   per `project-plan.md`'s Stack table). Minimal: one manually-seeded user, a login
-   route, session-cookie middleware gating everything else. No registration flow, no
-   password reset — there's exactly one user, ever.
-   *Gate:* integration test for session creation/validation/expiry; contract test
-   for the login route; Playwright test for the login flow and for an unauthenticated
-   request actually being rejected.
-
-2. **Deploy plumbing.** New CI job: push image to GHCR on merge to `main` (added to
+1. **Deploy plumbing.** New CI job: push image to GHCR on merge to `main` (added to
    the existing Phase-0 workflow file — not a new workflow). Portainer
    `secondo/personal-apps` git-stack created, pointed at the homelab repo, polling for
    new images, with Penventory's `/metrics` port actually published to the host
@@ -43,10 +34,10 @@ because it's less important.
    committed. This is homelab-infrastructure work adjacent to Penventory, not a
    Penventory deliverable.
    *Gate:* manual, one-time — `/verify` (image appears in GHCR, Portainer redeploys,
-   Prometheus target shows up on `/targets`). Not CI-testable, same as Phase 1's real
+   Prometheus target shows up on `/targets`). Not CI-testable, same as Phase 1's local
    import run.
 
-3. **Color Family view.** Service ports `gen_inks.py`'s hue/saturation/lightness → 7
+2. **Color Family view.** Service ports `gen_inks.py`'s hue/saturation/lightness → 7
    color families + Neutrals & Grays bucketing (`lib/server/services/colorFamily.ts`) —
    a pure function over `ink.color`, no other DB dependency. Route + UI grid grouped by
    family.
@@ -54,26 +45,26 @@ because it's less important.
    hues); contract test (route shape against seeded data); Playwright test (groups
    render).
 
-4. **Color Wheel view.** Service sorts by hue angle (colorjs.io hex → LCH conversion).
-   *Gate:* same three tiers as step 3.
+3. **Color Wheel view.** Service sorts by hue angle (colorjs.io hex → LCH conversion).
+   *Gate:* same three tiers as step 2.
 
-5. **Tone view.** Service buckets by lightness into 5 named bands (Dark /
+4. **Tone view.** Service buckets by lightness into 5 named bands (Dark /
    Medium-Dark / Medium / Light / Pastel).
-   *Gate:* unit-test the band boundaries explicitly; same tiers as step 3.
+   *Gate:* unit-test the band boundaries explicitly; same tiers as step 2.
 
-6. **Brand A–Z view.** Thinnest slice — repo query + alphabetical group-by-brand sort.
+5. **Brand A–Z view.** Thinnest slice — repo query + alphabetical group-by-brand sort.
    Still gets its own service function; routes stay HTTP-only even when the logic is
    small.
-   *Gate:* same tiers as step 3.
+   *Gate:* same tiers as step 2.
 
-7. **Reshuffle/reflow animation.** One shared ink-grid component, Svelte
+6. **Reshuffle/reflow animation.** One shared ink-grid component, Svelte
    `animate:flip` keyed by ink id, reused across all four views above — this is the
    single feature the framework choice was made for.
    *Gate:* Playwright test switches between two views, asserts the DOM order changes
    to match the new view's sort. Not a pixel/timing assertion — correctness of the end
    state and that a transition is wired.
 
-8. **Near-Dupes view (second wave).** Service computes CIE Lab conversion + pairwise
+7. **Near-Dupes view (second wave).** Service computes CIE Lab conversion + pairwise
    ΔE (colorjs.io) across the whole collection, ports the
    threshold-cluster/re-split-oversized-clusters algorithm from `gen_inks.py`, plus the
    per-ink uniqueness score (0–10, nearest-neighbor distance) and the Nearly
@@ -88,5 +79,6 @@ because it's less important.
 ## Definition of done
 
 All five views live, sharing one animated grid component, running on Secondo via the
-new GHCR/Portainer deploy path, gated behind login. No ledger, ratings, or AI in this
-phase — pen/ink/color data only, all already populated by the Phase 1 import.
+new GHCR/Portainer deploy path, gated behind the login Phase 1.1 already built. No
+ledger, ratings, or AI in this phase — pen/ink/color data only, populated for real via
+Phase 1.1's import feature.

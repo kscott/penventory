@@ -478,3 +478,38 @@ just the stock nib from acquisition) without pretending to answer "what's really
 now" once real usage exists. (2) stays a real option worth revisiting if drift ever becomes an
 actual problem for Ken, rather than a hypothetical one — not built now. Full query rule and gate in
 `phase4-plan.md` step 4.
+
+**2026-07-09 — Hard rule: the deployed app must be fully operable through its own interface. Zero
+operations may ever require shelling into the container or SSHing into the host to touch its
+files.** Surfaced by Ken asking how `npm run import:fpc` (step 6) would actually run against the
+real deployed instance on Secondo — the honest answer at the time was "exec into the container or
+manually copy files onto the host," both flatly rejected: "I should *never* need to get into a
+container to do anything with the app. That is a hard fail, red flag, stop do not pass go."
+First-pass fix attempt ("run the CLI locally, treat getting real data onto Secondo as a rare manual
+sync") was also rejected, for a sharper reason: it makes a development environment a required part
+of a fully functioning app. A dev environment is for building and testing software, not for
+operating the finished product — treating "run this on my Mac" as an acceptable stand-in for a
+missing feature just relocates the same failure (an operator reaching outside the app's own
+interface to make it work), it doesn't fix it. This is a standing, project-wide rule, not scoped to
+import: migrations and the pre-migration backup already comply (both automatic on container
+startup, no operator action); `/healthz`/`/metrics` are passive. Anything added later that would
+need an operator to shell in or SSH to function is wrong by this rule, full stop — same posture as
+the existing "no code path may require live external system state to be tested" rule, applied to
+operation instead of testing.
+
+**2026-07-09 — Import earns its own phase: Phase 1.1, inserted between Phase 1 and Phase 2, no
+renumbering.** Direct consequence of the rule above: the FPC import isn't actually *done* in any
+usable sense until it's a real, authenticated web feature — not a CLI, not even temporarily. That
+feature needs auth (previously slated as "Phase 2 step 1") and needs to exist before Phase 2's
+Visual Browse phase, since Browse was already written to assume real pen/ink data exists by then.
+Rather than renumbering `phase2-plan.md` through `phase6-plan.md` (a pure-churn cascade — file
+renames plus fixing every cross-reference in `ARCHITECTURE.md` and `phase1-plan.md` for no
+information gain — see [[feedback_no_numbered_filenames]]), the new phase is named **1.1** and gets
+its own `docs/phase1.1-plan.md`, sitting between the two without shifting anything else. Phase 1
+itself is rescoped to match: it builds the parsing/`resolveOrFlag`/dedup **service logic** (in
+`lib/server/services`, framework-agnostic per the existing layered architecture) and proves it out
+via a local CLI test harness — the CLI is explicitly a development/testing tool, never a
+production operational path. Phase 1.1 wraps that same service logic in authenticated routes + a
+review/decide UI (replacing hand-edited `import-report.json`), and does the same for the
+color-refresh operation. Until Phase 1.1 ships, the honest state is "the app doesn't yet support
+importing real data" — not a CLI-based workaround dressed up as good enough.

@@ -31,7 +31,9 @@ Read these every session, without exception:
   data model, phases, containerization, infrastructure.
 - `docs/phase0-plan.md` — current phase, ordered steps, gate per step. `docs/phase1-plan.md`
   through `phase6-plan.md` cover the phases after it, planned in full before Phase 1 execution
-  starts — same ordered-steps-with-gates treatment.
+  starts — same ordered-steps-with-gates treatment. `docs/phase1.1-plan.md` (Import) was added
+  later, inserted between Phase 1 and Phase 2 without renumbering — see `ARCHITECTURE.md`'s
+  2026-07-09 entries.
 - `ARCHITECTURE.md` — decision log. How continuity holds across sessions without re-deriving
   settled decisions. Decisions only, never a todo list — see `docs/punch-list.md` for small
   one-off reminders, and GitHub issues for the real backlog.

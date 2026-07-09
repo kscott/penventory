@@ -437,8 +437,14 @@ already-existing schema, not the schema itself. See `ARCHITECTURE.md`'s 2026-07-
 
 Sequencing follows the "visuals first" decision — see vision doc's Build Sequencing section.
 Each phase below is summarized at a paragraph level; full ordered steps with a gate per step
-live in `docs/phaseN-plan.md` (`phase1-plan.md` through `phase6-plan.md`), same treatment
-`phase0-plan.md` already got.
+live in `docs/phaseN-plan.md` (`phase1-plan.md` through `phase6-plan.md`, plus `phase1.1-plan.md`
+— see below), same treatment `phase0-plan.md` already got.
+
+**Phase 1.1 exists because import earned its own phase, inserted without renumbering anything
+after it** — see `ARCHITECTURE.md`'s 2026-07-09 entries. Numbered `1.1` rather than shifting
+Phases 2–6 up by one: a pure renumbering cascade (file renames plus every cross-reference) for no
+information gain. It sits between Phase 1 and Phase 2 because Phase 2 (Visual browse) already
+assumes real pen/ink data exists by the time it starts.
 
 ### Phase 0 — Setup
 - Repo scaffold, TypeScript strict mode, ESLint/Prettier
@@ -453,10 +459,25 @@ All of the above green before any real feature exists.
 - Drizzle schema for brands/lines/pens/inks/nibs/tags (core tables only — purchases/inkings
   come with their respective features)
 - Migrations, integration-tested against a real in-memory SQLite instance
-- FPC import script: `collected_inks.csv` / `collected_pens.csv` / `currently_inked.csv` →
-  tables, including the **brand/line normalization pass** (collapsing spelling drift into the
-  canonical lists — required before canonical-list entry is enforced going forward)
-- Import tested against real sample CSVs; verify counts, spot-check
+- FPC import **service logic** — CSV parsing (including the **brand/line normalization pass**,
+  collapsing spelling drift into the canonical lists), the free-text `Nib` column parser,
+  `resolveOrFlag`/duplicate-detection integration, dry-run report generation, and commit —
+  framework-agnostic (`lib/server/services`), proven via a local CLI test harness against
+  checked-in fixture CSVs
+- **The CLI is a development/testing tool, not a production operational path** — see
+  `ARCHITECTURE.md`'s 2026-07-09 "no shell/SSH to operate the app" rule. The deployed app doesn't
+  actually gain real-import capability until Phase 1.1 wraps this same service logic in an
+  authenticated web feature.
+
+### Phase 1.1 — Import
+- Auth (lightweight session-cookie, single seeded user) — needed here, not held for Phase 2,
+  since this is the first web-reachable feature that mutates real data
+- Authenticated import route(s): upload `collected_pens.csv`/`collected_inks.csv`, trigger
+  dry-run, review/decide flagged items in the UI (replacing hand-edited `import-report.json`),
+  commit — reuses Phase 1's service logic directly, doesn't reimplement it
+- Same treatment for the color-refresh operation
+- `currently_inked.csv`'s historical inking import stays in Phase 4 (Ledger) — depends on
+  `inkings`, which doesn't exist yet regardless of where Import itself lands
 
 ### Phase 2 — Visual browse experience (the actual point of building an app)
 Each view is its own fully-tested vertical slice — schema/repository/service/route/UI, unit +
@@ -468,8 +489,8 @@ integration + contract + Playwright tests, before moving to the next:
 - The reshuffle/reflow animation (`animate:flip`) tying the views together
 - Near-Dupes view (second wave, per vision doc — after the four above)
 
-No ledger, no ratings, no AI yet — this phase only needs pen/ink/color data, most of which
-already exists from the FPC import.
+No ledger, no ratings, no AI yet — this phase only needs pen/ink/color data, populated for real
+via Phase 1.1's import feature (not Phase 1's CLI, which never touches the deployed instance).
 
 ### Phase 3 — Core CRUD and tagging
 - Ink/pen/nib list, show, add, edit

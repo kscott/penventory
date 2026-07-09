@@ -1,9 +1,11 @@
 # Penventory — Phase 1 Plan: Data layer + deferred infra
 
-Covers the core catalog schema (brands/lines/pens/inks/nibs/tags), the FPC import, and
-two Containerization items `project-plan.md` never assigned a phase to (`/healthz`,
-`/metrics`). No ledger, no purchases, no photos yet — those wait for the features that
-give them meaning (Phase 3/4).
+Covers the core catalog schema (brands/lines/pens/inks/nibs/tags), the FPC import's
+underlying service logic (proven via a local CLI test harness — see `phase1.1-plan.md`
+for the real, deployed-usable web feature built on top of it), and two Containerization
+items `project-plan.md` never assigned a phase to (`/healthz`, `/metrics`). No ledger, no
+purchases, no photos yet — those wait for the features that give them meaning (Phase
+3/4).
 
 Project-wide testing rules from `phase0-plan.md` still apply unchanged: 90% coverage
 enforced in CI, no code path may require live external system state to test. Every
@@ -181,26 +183,32 @@ conversation turn out to need different answers — worth separating clearly:
    installed) and a non-null value (a closed install record), same pattern as step 4's
    FK/null coverage.
 
-6. **FPC import CLI.** A command Ken runs himself, whenever he has a fresh export ready
-   — pointed at whatever file he chooses at that moment
-   (`npm run import:fpc -- --pens <path> --inks <path>`), not a fixed one-time event
-   executed while working through this phase. **Scoped to `collected_pens.csv` and
-   `collected_inks.csv` only** — the catalog data. `currently_inked.csv` (FPC's
+6. **FPC import — service logic + local CLI test harness.** Builds the parsing/
+   `resolveOrFlag`/duplicate-detection/report/commit logic as framework-agnostic
+   **service code** (`lib/server/services`, per the existing layered architecture —
+   depends on step 5's repository interfaces, not Drizzle directly), proven out via
+   a local CLI (`npm run import:fpc -- --pens <path> --inks <path>`) that Ken can run
+   against his own local dev database whenever he wants to. **This CLI is a
+   development/testing tool, not a production operational path** — see
+   `ARCHITECTURE.md`'s 2026-07-09 "no shell/SSH to operate the app" rule. The
+   deployed app doesn't actually gain real-import capability until **Phase 1.1**
+   wraps this same service logic in an authenticated route + review/decide UI,
+   reusing it directly rather than reimplementing it. **Scoped to `collected_pens.csv`
+   and `collected_inks.csv` only** — the catalog data. `currently_inked.csv` (FPC's
    historical inking ledger) is out of scope here and moves to Phase 4 (see note
    below): it depends on the `inkings` table, which doesn't exist yet.
 
-   **This is also where the real `db` client module finally gets built.** Every
-   repository test through step 5 constructs its own temp-file SQLite inline
-   (`schema.integration.test.ts`, `resolve-or-flag.integration.test.ts` —
-   `mkdtempSync` + `migrateDatabase`, torn down after each test) — proving schema and
-   repository logic, never proving the production wiring. This CLI is the first thing
-   that has to open a *real* database file from a *real* `DATABASE_URL` and actually
-   do something to it (read the existing catalog, write new rows, take a backup), so
-   it's also where `src/lib/server/db/client.ts` (deleted as premature scope back in
-   step 2 — zero consumers at that point) gets built for real: reads `DATABASE_URL`,
-   opens the `better-sqlite3` connection, runs the existing `migrateDatabase` against
-   it — same function the integration tests already use, just pointed at a real file
-   path instead of a `mkdtempSync` one.
+   **This is also where the real `db` client module finally gets built** — needed for
+   the CLI to run against Ken's actual local dev database, not another disposable
+   temp-file one. Every repository test through step 5 constructs its own temp-file
+   SQLite inline (`schema.integration.test.ts`, `resolve-or-flag.integration.test.ts`
+   — `mkdtempSync` + `migrateDatabase`, torn down after each test) — proving schema
+   and repository logic, never proving the real env-var-to-connection wiring. So
+   `src/lib/server/db/client.ts` (deleted as premature scope back in step 2 — zero
+   consumers at that point) gets built for real here: reads `DATABASE_URL`, opens the
+   `better-sqlite3` connection, runs the existing `migrateDatabase` against it — same
+   function the integration tests already use, just pointed at a real file path
+   instead of a `mkdtempSync` one.
    *Gate (in addition to the CLI gate below):* an e2e-level test — not another
    temp-file integration test — that points `DATABASE_URL` at a real file path,
    goes through the client module's actual construction path (not a hand-rolled
@@ -303,7 +311,9 @@ conversation turn out to need different answers — worth separating clearly:
 
    **What this does and doesn't touch:** whatever runs during Phase 1 (Ken's own Mac,
    in a local dev/test setup) is not the real deployment — that's the homelab instance
-   (Secondo), stood up later per `project-plan.md`'s Infrastructure section. The SQLite
+   (Secondo), stood up later per `project-plan.md`'s Infrastructure section, and this
+   CLI never touches it (see the "no shell/SSH to operate the app" rule — Phase 1.1's
+   web feature is what actually gets real data onto the deployed instance). The SQLite
    file itself is never part of the app's build/deploy artifact in either environment —
    it's a path pointing at a persistent volume that exists independently of the app
    image (`project-plan.md`'s Volumes section already establishes this). Nothing about
@@ -320,11 +330,14 @@ conversation turn out to need different answers — worth separating clearly:
    matching problem in its own right, not a trivial join — worth calling out now so it
    isn't underestimated when Phase 4 gets there.
 
-8. **FPC color refresh — a separate, narrower operation from the main import.** FPC's
-   own `color` value is itself crowdsourced across all its users' entries and can
-   legitimately change over time — it isn't a fixed fact Ken's import captures once
-   and forgets. A distinct mode on the same CLI
-   (`npm run import:fpc -- refresh-color --inks <path>`), update-only:
+8. **FPC color refresh — a separate, narrower operation from the main import.** Same
+   service-logic-plus-local-CLI-harness treatment as step 6 — this CLI mode is a
+   development/testing tool for the underlying diff/commit logic, not a production
+   path; Phase 1.1 wraps it in a real authenticated route. FPC's own `color` value is
+   itself crowdsourced across all its users' entries and can legitimately change over
+   time — it isn't a fixed fact Ken's import captures once and forgets. A distinct
+   mode on the same CLI (`npm run import:fpc -- refresh-color --inks <path>`),
+   update-only:
    - Matches each CSV row against **existing** ink rows using the same natural-key
      matching as the main import — but never creates a new row. An unmatched row is
      skipped/flagged, not treated as new.
@@ -366,13 +379,15 @@ schema; it doesn't create the table. See `ARCHITECTURE.md`'s 2026-07-09 entry.
 
 ## Definition of done
 
-`brands`/`lines`/`models`/`aliases`/`pens`/`inks`/`nibs`/`tags`/`import_runs` schema
+`brands`/`lines`/`models`/`aliases`/`pens`/`inks`/`nibs`/`pen_nibs`/`tags`/`import_runs` schema
 exists, generated via `drizzle-kit` with the migration files committed and CI's drift
-check green. The FPC
-import CLI exists (catalog import and the separate color-refresh mode both), is tested
-against fixture CSVs, and is ready for Ken to run against his real export whenever he
-chooses — **actually populating real data is not part of this phase's done-ness**, it's
-a separate action on Ken's own schedule. `/healthz` and `/metrics` live. All gates above
-green in CI (lint, typecheck, unit+coverage ≥90%, integration — now including the
-migration drift check, e2e smoke, Docker build — same jobs Phase 0 stood up, no new
-pipeline stages).
+check green. The FPC import **service logic** exists (catalog import and the separate
+color-refresh mode both), is tested against fixture CSVs, and has a local CLI test
+harness Ken can run against his own dev database whenever he chooses — **actually
+populating real data is not part of this phase's done-ness**, it's a separate action on
+Ken's own schedule, and it never touches the deployed instance (see `ARCHITECTURE.md`'s
+"no shell/SSH to operate the app" rule). Real import capability on the deployed app is
+**Phase 1.1's** definition of done, not this phase's — Phase 1 only has to prove the
+underlying logic works. `/healthz` and `/metrics` live. All gates above green in CI
+(lint, typecheck, unit+coverage ≥90%, integration — now including the migration drift
+check, e2e smoke, Docker build — same jobs Phase 0 stood up, no new pipeline stages).
