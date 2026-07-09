@@ -321,6 +321,32 @@ despite being one package name) and `papaparse` (its `unparse()` write path is g
 first-class, not an afterthought, but the library is fundamentally browser-first — web workers,
 client-side large-file streaming — a design mismatch for a Node-only CLI/route use case).
 
+**2026-07-09 — `resolveOrFlag`'s outcome-3 flagging uses two independent signals, not one.**
+Character-level Damerau-Levenshtein similarity (threshold 0.7, chosen to clear the plan's
+"Piolt"/"Pilot" case at 0.8 while leaving unrelated short names like "Pilot"/"Sailor" well
+below it) only catches typos of a name that's otherwise the same shape. Walking through it with
+Ken surfaced a second, different-shaped drift pattern it misses entirely: compound/legal-name
+variants. "Pilot" vs. "Pilot Namiki" scores 0.42 — nowhere near the threshold — because it's not
+a typo, it's the same word plus more. Left alone, that case would fall straight through to
+outcome 4 and get silently created as a brand-new, unrelated brand — exactly the silent-dirty-
+data failure this whole mechanism exists to prevent. Ken's framing: resolveOrFlag should be
+biased toward finding a reason to match a known value, not toward assuming novelty. Fix: a
+second signal, `containsAsWords` — true when every word of the shorter (normalized) name appears,
+in order, among the longer name's words ("pilot" ⊆ "pilot namiki"; also catches non-contiguous
+compounds like "pilot company" ⊆ "pilot pen company"). Either signal flags a candidate; neither
+auto-creates or auto-resolves — same guarantee as before, just harder to reach outcome 4 by
+accident. Each flagged candidate in `ResolveCandidate.reasons` records which signal(s) caught it
+(`'fuzzy' | 'contains'`, both possible at once), so the review report can show why.
+
+Also checked, walking through it with Ken, whether character-level near-misses between two real,
+distinct names (e.g. "Platinum" vs. "Platignum," both real vendors, similarity 0.89) create
+ongoing flagging friction — they don't. Outcomes are checked in order: exact match before fuzzy.
+The first time "Platignum" appears against only "Platinum" on file, it's flagged once; once Ken
+confirms it's genuinely different and it exists as its own canonical row, every subsequent
+"Platignum" hits exact match and resolves silently forever after. No reason to weaken the
+threshold or add a "confirmed distinct, stop flagging" mechanism — the one-time cost was already
+the whole design.
+
 **2026-07-09 — CI hardening: `any`-type ban, warning gates, dependency/image/code scanning.**
 Grouped batch, kept as its own issue separate from any phase-plan step since it's tooling, not
 feature work:
