@@ -71,9 +71,14 @@ git checkout -b issue-N         # start
                                  # review DoD, pick nits until satisfied
 gh issue close N                # close BEFORE merging — branch stays live until nothing is left
 git checkout main && git merge issue-N && git branch -d issue-N
+git push origin main
+git push origin --delete issue-N   # once CI is green on main — remote branch too, not just local
 ```
 
-`gh` CLI for all GitHub operations. `git push origin` to push.
+`gh` CLI for all GitHub operations. `git push origin` to push. Once a branch's code is fully
+merged into `main` and CI is confirmed green there, delete both the local **and remote** copies
+of the branch as part of that same wrap-up — don't leave merged remote branches sitting on
+GitHub.
 
 ## Build and test
 
