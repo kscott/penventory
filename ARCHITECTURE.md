@@ -353,6 +353,17 @@ feature work:
   guessed) scans the built image for CRITICAL/HIGH OS-level and library CVEs with
   `ignore-unfixed: true` — closes the gap `npm audit` leaves (it only covers npm packages, not
   `node:22-slim`'s own OS packages, and this image is what actually runs on Secondo).
+- The Trivy scan's first real run caught something on the first try: two HIGH CVEs
+  (CVE-2026-33671, CVE-2026-48815), both traced to `usr/local/lib/node_modules/npm/node_modules/
+  {picomatch,sigstore}` — npm's own bundled, frozen internal dependencies, not this app's (our
+  actual `picomatch`, pulled in via `@sveltejs/adapter-node`, was already on the fixed 4.0.5).
+  Root cause, not a version pin: `node:22-slim` ships npm/corepack/yarn in every stage, but the
+  runtime stage's `CMD ["node", "build/index.js"]` never calls any of them. Fixed by removing
+  `/usr/local/lib/node_modules/{npm,corepack}`, `/opt/yarn-v*`, and their bin symlinks in the
+  runtime stage — a build tool has no job to do in production, so it doesn't ship there,
+  eliminating the CVEs by removing what carries them rather than chasing version bumps. Verified
+  the stripped image still builds, runs, and serves `/healthz`/`/metrics`/`/` at 200 before
+  treating it as done.
 
 **2026-07-08 — No improvement backlog in this file.** Was previously structured as "decision log
 for decisions made; improvement backlog for things noticed but not acted on" — a known
