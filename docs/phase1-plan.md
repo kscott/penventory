@@ -168,6 +168,25 @@ conversation turn out to need different answers — worth separating clearly:
    historical inking ledger) is out of scope here and moves to Phase 4 (see note
    below): it depends on the `inkings` table, which doesn't exist yet.
 
+   **This is also where the real `db` client module finally gets built.** Every
+   repository test through step 5 constructs its own temp-file SQLite inline
+   (`schema.integration.test.ts`, `resolve-or-flag.integration.test.ts` —
+   `mkdtempSync` + `migrateDatabase`, torn down after each test) — proving schema and
+   repository logic, never proving the production wiring. This CLI is the first thing
+   that has to open a *real* database file from a *real* `DATABASE_URL` and actually
+   do something to it (read the existing catalog, write new rows, take a backup), so
+   it's also where `src/lib/server/db/client.ts` (deleted as premature scope back in
+   step 2 — zero consumers at that point) gets built for real: reads `DATABASE_URL`,
+   opens the `better-sqlite3` connection, runs the existing `migrateDatabase` against
+   it — same function the integration tests already use, just pointed at a real file
+   path instead of a `mkdtempSync` one.
+   *Gate (in addition to the CLI gate below):* an e2e-level test — not another
+   temp-file integration test — that points `DATABASE_URL` at a real file path,
+   goes through the client module's actual construction path (not a hand-rolled
+   `Database`/`migrateDatabase` pair built directly in the test), and confirms a
+   genuine, working connection comes back. This proves the env-var-to-connection
+   wiring itself, which the repository-level integration tests never exercise.
+
    **Identity, confirmed against the real export files** (not assumed): FPC's CSVs
    carry no per-record ID at all.
    - Inks (`Brand;Line;Name;Type;Color;...`): natural key is the Brand+Line+Name+Type
