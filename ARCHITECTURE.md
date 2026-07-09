@@ -306,6 +306,21 @@ single-character typos as directly), phonetic matching like Soundex/Metaphone (s
 sounds-alike, not spelled-alike — wrong problem), embedding/model-based similarity (breaks the
 no-live-external-state rule, non-deterministic, overkill for short strings).
 
+**2026-07-09 — CSV library: `csv-parse` for reading, `csv-stringify` for writing.** Two real
+gaps, not one — `project-plan.md` never named a CSV library at all, and CSV isn't read-only:
+Phase 1 steps 6/8 and Phase 4 read FPC exports, but Phase 6 step 4 ("Export (CSV/full)") writes
+Penventory's own data back out, gated by a contract test for field-completeness. Verified live
+against the npm registry before deciding (not recalled from training data): `csv-parse` (7.0.1,
+0 runtime deps, ~59.7M downloads/month, sync API confirmed alongside its stream API, delimiter
+fully configurable — needed for FPC's semicolon-delimited files) and `csv-stringify` (6.8.1, 0
+runtime deps, ~29.8M downloads/month) — same project/maintainer as `csv-parse`, so read and
+write share one config vocabulary for delimiter/quoting rather than two unrelated
+implementations for what's conceptually symmetric work. Rejected: `fast-csv` (bundles its own
+`@fast-csv/format` + `@fast-csv/parse` as real runtime dependencies, not actually zero-dep
+despite being one package name) and `papaparse` (its `unparse()` write path is genuinely
+first-class, not an afterthought, but the library is fundamentally browser-first — web workers,
+client-side large-file streaming — a design mismatch for a Node-only CLI/route use case).
+
 **2026-07-08 — No improvement backlog in this file.** Was previously structured as "decision log
 for decisions made; improvement backlog for things noticed but not acted on" — a known
 anti-pattern from get-clear, where the backlog section degrades into a todo list embedded in
