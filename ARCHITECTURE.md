@@ -453,3 +453,28 @@ to what's actually left once the schema already exists: the assign/remove servic
 nib" query, plus the nib-swap business logic (close the stock nib's row, open a new one) — same
 design as originally specified (2026-07-08 entry above), just built on schema that already exists
 by the time Phase 4 starts instead of created there.
+
+**2026-07-09 — `pen_nibs` and `inkings.nib_id` are independent facts, never kept in sync; "current
+nib" display prefers the most recent inking over `pen_nibs`.** Raised by Ken as a general
+discussion, not tied to a specific step (`inkings` doesn't exist until Phase 4 step 4; `pen_nibs`
+already exists from Phase 1 step 5). `pen_nibs` is the formal install/removal history — a
+deliberate, structural assignment. `inkings.nib_id` is a different kind of fact: vision.md already
+establishes that Start records "pen + ink + nib matched together" as its own independently-entered
+fact, not derived from whatever `pen_nibs` currently has open. In practice a nib swap is usually
+just for one inking (testing a spare nib, trying a different grind) and isn't meant as a permanent
+reassignment worth a formal `pen_nibs` change — so the two are expected to diverge routinely, not
+as an error case.
+
+Considered three couplings: (1) fully independent, no display logic favoring either; (2) a soft
+prompt at inking-Start time asking whether a mismatched nib should also update `pen_nibs`; (3) full
+auto-derivation — every inking Start forces a `pen_nibs` open/close. Rejected (3) outright: it
+would destroy the exact distinction being modeled (test-fit vs. permanent swap) by making every
+inking leave permanent install history. Landed on (1) for the *data model* — nothing enforces or
+reconciles the two — but with a specific rule for *display*: "current nib for this pen" prefers the
+most recent inking's `nib_id` (by `started_on`, active or ended — a dry pen still physically holds
+whatever nib was last used) over `pen_nibs`'s open row, falling back to `pen_nibs` only when the
+pen has no inkings yet. `pen_nibs` keeps its own meaning (formal history, rarely touched — mostly
+just the stock nib from acquisition) without pretending to answer "what's really in there right
+now" once real usage exists. (2) stays a real option worth revisiting if drift ever becomes an
+actual problem for Ken, rather than a hypothetical one — not built now. Full query rule and gate in
+`phase4-plan.md` step 4.

@@ -6,18 +6,21 @@ the two dashboard views the vision doc confirmed as worth keeping.
 
 ## Ordered steps
 
-1. **Nib assign/remove UI + "current nib" query.** `pen_nibs`'s schema already exists
-   — pulled forward into **Phase 1 step 5**, since the FPC import needed it to link
-   an imported pen to its parsed stock nib. This step is the service/route/UI layer
-   on top of that existing table, not the table itself: assign/remove nib to/from
-   pen, and a "current nib for this pen" query (the open — `removed_on IS NULL` —
-   `pen_nibs` row, if any). A pen's stock nib is already a real `nibs` row from
-   acquisition (Phase 1's import), not a placeholder — swapping in a custom nib
-   means closing the stock nib's `pen_nibs` row (`removed_on` set) and opening a new
-   one for the replacement, not deleting or overwriting anything. The stock nib keeps
-   its full install/remove history and becomes a nib with no currently-open
-   `pen_nibs` row — i.e. a loose nib in storage, the exact case Phase 6's
-   (not-yet-designed) nib storage/location tracking is meant to help find.
+1. **Nib assign/remove UI + "current nib" query (pen_nibs-only version — see step 4
+   for the final rule).** `pen_nibs`'s schema already exists — pulled forward into
+   **Phase 1 step 5**, since the FPC import needed it to link an imported pen to its
+   parsed stock nib. This step is the service/route/UI layer on top of that existing
+   table, not the table itself: assign/remove nib to/from pen, and a "current nib for
+   this pen" query. **At this point in the build, before `inkings` exists, that query
+   is necessarily just "the open (`removed_on IS NULL`) `pen_nibs` row, if any"** —
+   step 4 revises it once there's a better signal available. A pen's stock nib is
+   already a real `nibs` row from acquisition (Phase 1's import), not a placeholder —
+   swapping in a custom nib means closing the stock nib's `pen_nibs` row
+   (`removed_on` set) and opening a new one for the replacement, not deleting or
+   overwriting anything. The stock nib keeps its full install/remove history and
+   becomes a nib with no currently-open `pen_nibs` row — i.e. a loose nib in storage,
+   the exact case Phase 6's (not-yet-designed) nib storage/location tracking is meant
+   to help find.
    *Gate:* full DoD tiers, plus a specific regression case: swap a pen's nib, assert
    the original nib's history is preserved (was installed from X to Y) and it now has
    no open `pen_nibs` row, while the new nib does.
@@ -74,6 +77,25 @@ the two dashboard views the vision doc confirmed as worth keeping.
    "Mid-use" notes (vision doc's third lifecycle moment, alongside Start/End) land
    via `observations.inking_id` — see step 6 below and `project-plan.md`'s
    `observations` table.
+
+   **Revises step 1's "current nib" query.** `pen_nibs` and `inkings.nib_id` are
+   deliberately independent facts, not kept in sync — `inkings.nib_id` records
+   whichever nib was actually used for that specific inking (vision doc: Start
+   records "pen + ink + nib matched together"), and in practice a nib swap is usually
+   just for one inking, not a permanent reassignment worth a formal `pen_nibs` change.
+   That means `pen_nibs`'s currently-open row is often *not* what's really in the pen
+   right now. Once `inkings` exists, "current nib for this pen" becomes: the `nib_id`
+   of that pen's most recent inking by `started_on` (active or already ended — a dry
+   pen still physically has whatever nib was last used in it), falling back to
+   `pen_nibs`'s open row only when the pen has no inkings yet (freshly acquired,
+   never used). `pen_nibs` itself is never rewritten or reconciled to match — it
+   stays the formal install/removal history (mostly just the stock nib from
+   acquisition, plus the rare deliberate permanent reassignment); it simply stops
+   being authoritative for *display* once real inking history exists. See
+   `ARCHITECTURE.md`'s 2026-07-09 entry.
+   *Gate:* unit test for the revised query — asserts most-recent-inking's nib wins
+   over a `pen_nibs` open row that names a different nib, and asserts the
+   `pen_nibs`-only fallback still holds for a pen with no inkings.
 
 5. **Historical inkings import from `currently_inked.csv`** (deferred here from Phase 1
    — see `phase1-plan.md` step 7's note). Extends the same Ken-triggered CLI pattern
