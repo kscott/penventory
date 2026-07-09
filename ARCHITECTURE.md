@@ -338,7 +338,12 @@ feature work:
   `@esbuild-kit` loader — never shipped in the Docker image); `--audit-level=high` excludes the
   `cookie` finding pinned by `@sveltejs/kit@2.69.2` itself (`^0.6.0`, confirmed via the
   registry — not fixable from this repo, low severity). Verified both current findings are
-  correctly filtered out (0 results) rather than the threshold being untested.
+  correctly filtered out (0 results) rather than the threshold being untested. Once secret
+  scanning surfaced both as GitHub Dependabot alerts too, dismissed both there directly via
+  `gh api` (`not_used` for esbuild, `tolerable_risk` for cookie, each with the same reasoning
+  as above) — stops the notification noise and stops Dependabot opening a doomed auto-merge PR
+  for something neither fix is actually available for; a genuinely new advisory on either
+  package still alerts normally.
 - GitHub repo settings enabled directly via `gh api` (not the web UI): secret scanning +
   push protection, Dependabot security updates (security only — no `dependabot.yml` for routine
   version-update PRs, which is what generates the noise Ken's hit before on other repos), CodeQL
