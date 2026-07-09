@@ -11,3 +11,7 @@ bun.lockb
 # Docs are hand-authored prose, not code — don't churn them for markdown style
 *.md
 docs/
+
+# drizzle-kit generated snapshot/journal metadata — regenerated on every
+# schema change, nobody hand-edits these, formatting them serves no purpose
+drizzle/meta/

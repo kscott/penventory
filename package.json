@@ -16,7 +16,10 @@
 		"test": "npm run test:unit -- --run && npm run test:e2e",
 		"test:coverage": "npm run test:unit -- --run --coverage",
 		"test:e2e": "playwright install --with-deps chromium && playwright test",
-		"audit": "npm audit --omit=dev --audit-level=high"
+		"test:integration": "vitest --project integration --run",
+		"audit": "npm audit --omit=dev --audit-level=high",
+		"db:generate": "drizzle-kit generate",
+		"db:check-drift": "drizzle-kit generate && test -z \"$(git status --porcelain drizzle/)\""
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
@@ -24,8 +27,10 @@
 		"@sveltejs/adapter-node": "^5.5.4",
 		"@sveltejs/kit": "^2.63.0",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
+		"@types/better-sqlite3": "^7.6.13",
 		"@types/node": "^24",
 		"@vitest/coverage-v8": "^4.1.10",
+		"drizzle-kit": "^0.31.10",
 		"eslint": "^10.4.1",
 		"eslint-config-prettier": "^10.1.8",
 		"eslint-plugin-svelte": "^3.19.0",
@@ -40,6 +45,8 @@
 		"vitest": "^4.1.8"
 	},
 	"dependencies": {
+		"better-sqlite3": "^12.11.1",
+		"drizzle-orm": "^0.45.2",
 		"prom-client": "^15.1.3"
 	}
 }

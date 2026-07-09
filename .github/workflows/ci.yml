@@ -38,9 +38,6 @@ jobs:
       - run: npm ci
       - run: npm run test:coverage
 
-  # Placeholder — no DB exists yet (Phase 0 has zero product code). Phase 1 adds
-  # real integration tests into this same job rather than standing up a new one,
-  # per docs/phase1-plan.md.
   integration:
     runs-on: ubuntu-latest
     steps:
@@ -50,7 +47,12 @@ jobs:
           node-version: '22'
           cache: 'npm'
       - run: npm ci
-      - run: echo "No integration tests yet — Phase 1 adds them here (see docs/phase1-plan.md)."
+      # Fails if the committed schema.ts and the committed migration files have
+      # drifted apart — i.e. someone changed the schema and forgot to run
+      # `npm run db:generate` and commit the result. See phase1-plan.md's
+      # Migrations section.
+      - run: npm run db:check-drift
+      - run: npm run test:integration
 
   e2e:
     runs-on: ubuntu-latest
