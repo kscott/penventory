@@ -63,11 +63,19 @@ describe('controlled-list schema', () => {
 				'filling_systems',
 				'finishes',
 				'import_runs',
+				'inks',
 				'lines',
 				'models',
+				'nib_base_sizes',
 				'nib_materials',
+				'nib_point_sizes',
+				'nib_purities',
 				'nib_shapes',
+				'nibs',
 				'pen_materials',
+				'pens',
+				'taggables',
+				'tags',
 				'vendors'
 			].sort()
 		);

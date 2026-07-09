@@ -142,16 +142,25 @@ conversation turn out to need different answers — worth separating clearly:
    two real bugs — both were free-text strings in earlier drafts of this schema,
    same class of bug, fixed the same way. `nibs.brand_id` is **nullable** — a bare
    point size in FPC's data (just "F"/"M"/"B", no other qualifiers) is a confirmed
-   real case where the manufacturer genuinely isn't recorded. `purity`, `base_size`,
-   and the newly added `point_size` on nibs stay plain constrained strings, not
-   controlled-list tables — small, stable, standardized vocabularies (9K/14K/18K/
-   21K/22K; #5/#6/#8; EF/F/FM/MF/F/M/M/OM/CM/B/BB/BBB/XXXF) with none of the
-   real-world drift risk the controlled-list fields have. Confirmed against Ken's
-   real FPC data specifically: "FM"/"MF"/"F/M" all coexist as genuinely distinct
-   valid values (Pilot/Sailor/Diplomat conventions), not typos of each other — a
-   fuzzy controlled-list matcher would have actively mis-flagged them, which is
-   exactly why this stays a simple constrained value. No `purchases`, `inkings`,
-   `pen_nibs`, `used`, or `swatched` — see "Deferred columns" below.
+   real case where the manufacturer genuinely isn't recorded. `purity_id`,
+   `base_size_id`, and the newly added `point_size_id` on nibs are FKs into three
+   new lookup tables (`nib_purities`, `nib_base_sizes`, `nib_point_sizes`) —
+   **not** TypeScript enums, and **not** given fuzzy/alias treatment (not in
+   `ALIASABLE_TYPES`): confirmed against Ken's real FPC data that "FM"/"MF"/"F/M"
+   all coexist as genuinely distinct valid values (Pilot/Sailor/Diplomat
+   conventions), not typos of each other — a fuzzy matcher would have actively
+   mis-flagged them. Originally drafted as plain constrained strings, but that
+   would mean a genuinely new value (a rare karat, an unusual housing size) could
+   only ever be added by editing code and deploying — real friction for
+   collector-world vocabularies Ken doesn't fully control. Real lookup tables
+   fix that: seeded with the known values by this migration
+   (`NIB_PURITY_SEED`/`NIB_BASE_SIZE_SEED`/`NIB_POINT_SIZE_SEED` in `schema.ts`),
+   resolved by exact match only (found, or flagged for an explicit decision —
+   never fuzzy-suggested, never silently created), so a new value afterward is
+   a data operation, not a migration. See `ARCHITECTURE.md`'s 2026-07-09 entry
+   for the full reasoning, and `phase3-plan.md` step 3 for how the live-entry
+   "add new value" path surfaces once Nib CRUD exists. No `purchases`,
+   `inkings`, `pen_nibs`, `used`, or `swatched` — see "Deferred columns" below.
    *Gate:* integration test creates one row per table, verifies every foreign key
    (including that `nibs.brand_id` accepts null) and the tag/taggable polymorphic
    join. CI drift check passes.

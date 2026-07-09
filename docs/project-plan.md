@@ -153,19 +153,24 @@ genuinely not knowable from the data). Brand stays unset until Ken resolves it b
 id
 brand_id              → brands (nullable — see above)
 material_id             → nib_materials
-purity                  enum(9K / 14K / 18K / 21K / 22K)   (karat — simple constrained value,
-                                    not a controlled-list table — small, stable, standardized set)
-base_size                enum(#5 / #6 / #8)   (nib housing size — same reasoning as purity)
-point_size               enum(EF / F / FM / MF / F/M / M / OM / CM / B / BB / BBB / XXXF /
-                            1.0 / 1.1 / 1.4 / 1.5)
-                          — simple constrained value, confirmed against Ken's real FPC
-                            data. "FM", "MF", and "F/M" are THREE valid, distinct
-                            values — Pilot's Fine-Medium, Sailor's Medium-Fine, and
-                            Diplomat's slash convention (e.g. the Diplomat Viper) — not
-                            typos of each other. This is exactly why point_size is a
-                            simple constrained value and not a controlled-list/fuzzy-
-                            alias table: a fuzzy matcher would have actively mis-
-                            flagged FM/MF as near-duplicates of each other. The mm
+purity_id                → nib_purities   (karat — a real lookup table, not a TypeScript
+                                    enum. Exact-match only, deliberately NOT in
+                                    ALIASABLE_TYPES / never fuzzy-matched (see point_size
+                                    below for why) — but still a real table, seeded with
+                                    the known set (9K/14K/18K/21K/22K), so a genuinely new
+                                    karat is a data operation, not a code change + deploy.
+                                    Nullable — Steel nibs have no karat at all.)
+base_size_id              → nib_base_sizes   (nib housing size — #5/#6/#8 seeded, same
+                                    reasoning and exact-match-only mechanism as purity_id)
+point_size_id             → nib_point_sizes   (EF/F/FM/MF/F/M/M/OM/CM/B/BB/BBB/XXXF/
+                            1.0/1.1/1.4/1.5 seeded — same mechanism as purity_id/
+                            base_size_id. Confirmed against Ken's real FPC data: "FM",
+                            "MF", and "F/M" are THREE valid, distinct values — Pilot's
+                            Fine-Medium, Sailor's Medium-Fine, and Diplomat's slash
+                            convention (e.g. the Diplomat Viper) — not typos of each
+                            other. This is exactly why point_size is exact-match-only and
+                            never in ALIASABLE_TYPES: a fuzzy matcher would have actively
+                            mis-flagged FM/MF as near-duplicates of each other. The mm
                             values (1.0/1.1/1.4/1.5) are the same concept as the
                             letter-code values — nib width — just the stub/italic
                             convention instead of the round-nib convention; confirmed

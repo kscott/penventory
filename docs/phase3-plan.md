@@ -19,7 +19,17 @@ app, and the ink bulk-edit feature that directly targets FPC's worst pain point
    *Gate:* same tiers; Playwright specifically covers the hidden-by-default behavior.
 
 3. **Nib CRUD** — standalone entity, no originating pen required, per the vision
-   doc's "nib can be purchased entirely on its own" requirement.
+   doc's "nib can be purchased entirely on its own" requirement. Has the most
+   controlled/lookup-backed fields of any entity — `shape_id`/`finish_id`/
+   `nibmeister_id` get the same fuzzy-checked picker as step 1's Brand/Line,
+   **and** `purity_id`/`base_size_id`/`point_size_id` get the same "Add new..."
+   picker pattern too, just without the fuzzy-candidate suggestion step (they're
+   exact-match-only, never in `ALIASABLE_TYPES` — see `phase1-plan.md` step 4 and
+   `ARCHITECTURE.md`'s 2026-07-09 entry). This is the live-entry answer to "I
+   bought a new-to-me pen with a nib size I've never recorded before": type it in
+   the form, "Add new..." creates the lookup row right there, no deploy, no
+   waiting for a batch import to notice it. Before this step ships, that gap is
+   real — there's no live-entry surface at all until Nib CRUD exists.
    *Gate:* same tiers.
 
 4. **Tag assignment + AND/OR filter.** Service + route + UI filter component.

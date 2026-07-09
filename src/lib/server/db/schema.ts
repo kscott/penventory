@@ -1,5 +1,5 @@
 import { sql } from 'drizzle-orm';
-import { integer, sqliteTable, text, unique } from 'drizzle-orm/sqlite-core';
+import { integer, primaryKey, sqliteTable, text, unique } from 'drizzle-orm/sqlite-core';
 
 const timestamps = {
 	created_at: integer('created_at', { mode: 'timestamp' })
@@ -119,6 +119,197 @@ export const aliases = sqliteTable(
 		...timestamps
 	},
 	(t) => [unique().on(t.alias, t.aliasable_type)]
+);
+
+// --- Core catalog: pens, inks, nibs, tags -------------------------------------
+// Core fields only — no purchases/inkings/pen_nibs/observations (Phase 4) and
+// no computed columns (used/swatched/color/color_family — Phase 2/3/4). Every
+// FK closure below is named (not inlined) for the same reason as brandId
+// above: a real unit test can invoke it directly, one closure per target
+// table shared across every column that points at it, not one per column.
+
+export const modelId = () => models.id;
+export const penMaterialId = () => pen_materials.id;
+export const finishId = () => finishes.id;
+export const fillingSystemId = () => filling_systems.id;
+export const nibMaterialId = () => nib_materials.id;
+export const nibShapeId = () => nib_shapes.id;
+export const vendorId = () => vendors.id;
+export const lineId = () => lines.id;
+
+export const SIZE_CATEGORIES = ['pocket', 'standard', 'slim', 'oversized'] as const;
+export type SizeCategory = (typeof SIZE_CATEGORIES)[number];
+
+export const CONDITIONS = ['new', 'vintage', 'second_hand'] as const;
+export type Condition = (typeof CONDITIONS)[number];
+
+export const OWNERSHIP_STATES = ['active', 'retired', 'rehomed'] as const;
+export type OwnershipState = (typeof OWNERSHIP_STATES)[number];
+
+// Shared high/medium/low scale — nibs.feedback/wetness, inks.sheen/shading/
+// wetness/flow are all independent properties that happen to use the same
+// three-point scale, not one field duplicated under different names.
+export const LEVELS = ['high', 'medium', 'low'] as const;
+export type Level = (typeof LEVELS)[number];
+
+// Seed values for the nib_purities/nib_base_sizes/nib_point_sizes lookup
+// tables below — the known real-world set as of this migration, not a type
+// constraint. Unlike SIZE_CATEGORIES etc. above, these describe collector/
+// manufacturer vocabularies Ken doesn't fully control: a genuinely new karat
+// or housing size can show up in real data. Kept as real DB rows instead of
+// a TypeScript union specifically so adding one later is a data operation
+// (insert a row), not a code change + deploy.
+export const NIB_PURITY_SEED = ['9K', '14K', '18K', '21K', '22K'] as const;
+export const NIB_BASE_SIZE_SEED = ['#5', '#6', '#8'] as const;
+export const NIB_POINT_SIZE_SEED = [
+	'EF',
+	'F',
+	'FM',
+	'MF',
+	'F/M',
+	'M',
+	'OM',
+	'CM',
+	'B',
+	'BB',
+	'BBB',
+	'XXXF',
+	'1.0',
+	'1.1',
+	'1.4',
+	'1.5'
+] as const;
+
+export const INK_TYPES = ['bottle', 'sample', 'cartridge'] as const;
+export type InkType = (typeof INK_TYPES)[number];
+
+export const COLOR_OVERRIDE_SOURCES = ['fpc', 'swatch', 'colorimeter', 'community'] as const;
+export type ColorOverrideSource = (typeof COLOR_OVERRIDE_SOURCES)[number];
+
+export const TAGGABLE_TYPES = ['pen', 'ink', 'nib'] as const;
+export type TaggableType = (typeof TAGGABLE_TYPES)[number];
+
+export const pens = sqliteTable('pens', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	brand_id: integer('brand_id').notNull().references(brandId),
+	model_id: integer('model_id').notNull().references(modelId),
+	color: text('color').notNull(),
+	material_id: integer('material_id').notNull().references(penMaterialId),
+	trim_color_id: integer('trim_color_id').notNull().references(finishId),
+	filling_system_id: integer('filling_system_id').notNull().references(fillingSystemId),
+	size_category: text('size_category', { enum: SIZE_CATEGORIES }).notNull(),
+	condition: text('condition', { enum: CONDITIONS }).notNull(),
+	accessories_note: text('accessories_note'),
+	notes: text('notes'),
+	ownership_state: text('ownership_state', { enum: OWNERSHIP_STATES }).notNull(),
+	ownership_changed_on: integer('ownership_changed_on', { mode: 'timestamp' }),
+	...timestamps
+});
+
+// Exact-match-only lookup tables for purity/base_size/point_size — same
+// unscoped shape as step 2's controlled lists (unique name, timestamps), but
+// deliberately NOT in ALIASABLE_TYPES and never fuzzy-matched: point_size's
+// real data has "FM"/"MF"/"F/M" coexisting as three genuinely distinct
+// values (Pilot/Sailor/Diplomat conventions), not typos of each other — a
+// fuzzy matcher would actively mis-flag them. Resolution is exact match or
+// flagged for an explicit "add this value" decision, never auto-created and
+// never fuzzy-suggested. Seeded with NIB_*_SEED's known values by this
+// migration; new values afterward are just more rows.
+export const nib_purities = sqliteTable('nib_purities', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	name: text('name').notNull().unique(),
+	...timestamps
+});
+
+export const nib_base_sizes = sqliteTable('nib_base_sizes', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	name: text('name').notNull().unique(),
+	...timestamps
+});
+
+export const nib_point_sizes = sqliteTable('nib_point_sizes', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	name: text('name').notNull().unique(),
+	...timestamps
+});
+
+export const nibPurityId = () => nib_purities.id;
+export const nibBaseSizeId = () => nib_base_sizes.id;
+export const nibPointSizeId = () => nib_point_sizes.id;
+
+// Standalone objects, owned independently of any pen (see pen_nibs, Phase 4).
+// brand_id/purity_id/finish_id/nibmeister_id are nullable — real, confirmed
+// gaps: a bare point size in FPC's data ("F"/"M"/"B" alone) means Steel + #6
+// housing + Round shape are assigned, but the manufacturer genuinely isn't
+// recorded (JoWo vs. Bock vs. other isn't knowable), and Steel nibs have no
+// karat purity at all. material_id/base_size_id/shape_id/point_size_id stay
+// required — the same bare-point-size case still assigns all four.
+export const nibs = sqliteTable('nibs', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	brand_id: integer('brand_id').references(brandId),
+	material_id: integer('material_id').notNull().references(nibMaterialId),
+	purity_id: integer('purity_id').references(nibPurityId),
+	base_size_id: integer('base_size_id').notNull().references(nibBaseSizeId),
+	point_size_id: integer('point_size_id').notNull().references(nibPointSizeId),
+	shape_id: integer('shape_id').notNull().references(nibShapeId),
+	finish_id: integer('finish_id').references(finishId),
+	custom_name: text('custom_name'),
+	is_custom_grind: integer('is_custom_grind', { mode: 'boolean' }).notNull().default(false),
+	grind_description: text('grind_description'),
+	nibmeister_id: integer('nibmeister_id').references(vendorId),
+	ground_on: integer('ground_on', { mode: 'timestamp' }),
+	feedback: text('feedback', { enum: LEVELS }),
+	wetness: text('wetness', { enum: LEVELS }),
+	notes: text('notes'),
+	...timestamps
+});
+
+// color/color_family are deliberately absent — both computed at read time
+// (Phase 2), not stored, so they don't drift out of sync with nothing behind
+// them. color_fpc is the only color field guaranteed to exist for every ink,
+// hence NOT NULL; the other three are populated later by Phase 3/4 pipelines.
+export const inks = sqliteTable('inks', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	brand_id: integer('brand_id').notNull().references(brandId),
+	line_id: integer('line_id').notNull().references(lineId),
+	maker_id: integer('maker_id').references(brandId),
+	name: text('name').notNull(),
+	type: text('type', { enum: INK_TYPES }).notNull(),
+	color_fpc: text('color_fpc').notNull(),
+	color_swatch: text('color_swatch'),
+	color_colorimeter: text('color_colorimeter'),
+	color_community: text('color_community'),
+	color_override_source: text('color_override_source', { enum: COLOR_OVERRIDE_SOURCES }),
+	sheen: text('sheen', { enum: LEVELS }),
+	shimmer: integer('shimmer', { mode: 'boolean' }).notNull().default(false),
+	shading: text('shading', { enum: LEVELS }),
+	permanence: integer('permanence', { mode: 'boolean' }).notNull().default(false),
+	wetness: text('wetness', { enum: LEVELS }),
+	flow: text('flow', { enum: LEVELS }),
+	notes: text('notes'),
+	ownership_state: text('ownership_state', { enum: OWNERSHIP_STATES }).notNull(),
+	ownership_changed_on: integer('ownership_changed_on', { mode: 'timestamp' }),
+	...timestamps
+});
+
+// Polymorphic, user-curated only — never auto-generated. No created_at/
+// updated_at on either table: project-plan.md's field list for both is
+// exactly what's below, nothing more.
+export const tags = sqliteTable('tags', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	name: text('name').notNull().unique()
+});
+
+export const tagId = () => tags.id;
+
+export const taggables = sqliteTable(
+	'taggables',
+	{
+		tag_id: integer('tag_id').notNull().references(tagId),
+		taggable_type: text('taggable_type', { enum: TAGGABLE_TYPES }).notNull(),
+		taggable_id: integer('taggable_id').notNull()
+	},
+	(t) => [primaryKey({ columns: [t.tag_id, t.taggable_type, t.taggable_id] })]
 );
 
 // --- Import audit log --------------------------------------------------------
