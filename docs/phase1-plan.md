@@ -1,11 +1,11 @@
 # Penventory — Phase 1 Plan: Data layer + deferred infra
 
 Covers the core catalog schema (brands/lines/pens/inks/nibs/tags), the FPC import's
-underlying service logic (proven via a local CLI test harness — see `phase1.1-plan.md`
-for the real, deployed-usable web feature built on top of it), and two Containerization
-items `project-plan.md` never assigned a phase to (`/healthz`, `/metrics`). No ledger, no
-purchases, no photos yet — those wait for the features that give them meaning (Phase
-3/4).
+underlying service logic — no CLI, tested directly, same pattern as every other
+service in this phase — see `phase1.1-plan.md` for the real, deployed-usable web
+feature built on top of it, and two Containerization items `project-plan.md` never
+assigned a phase to (`/healthz`, `/metrics`). No ledger, no purchases, no photos yet —
+those wait for the features that give them meaning (Phase 3/4).
 
 Project-wide testing rules from `phase0-plan.md` still apply unchanged: 90% coverage
 enforced in CI, no code path may require live external system state to test. Every
@@ -183,38 +183,38 @@ conversation turn out to need different answers — worth separating clearly:
    installed) and a non-null value (a closed install record), same pattern as step 4's
    FK/null coverage.
 
-6. **FPC import — service logic + local CLI test harness.** Builds the parsing/
-   `resolveOrFlag`/duplicate-detection/report/commit logic as framework-agnostic
-   **service code** (`lib/server/services`, per the existing layered architecture —
-   depends on step 5's repository interfaces, not Drizzle directly), proven out via
-   a local CLI (`npm run import:fpc -- --pens <path> --inks <path>`) that Ken can run
-   against his own local dev database whenever he wants to. **This CLI is a
-   development/testing tool, not a production operational path** — see
-   `ARCHITECTURE.md`'s 2026-07-09 "no shell/SSH to operate the app" rule. The
-   deployed app doesn't actually gain real-import capability until **Phase 1.1**
-   wraps this same service logic in an authenticated route + review/decide UI,
-   reusing it directly rather than reimplementing it. **Scoped to `collected_pens.csv`
-   and `collected_inks.csv` only** — the catalog data. `currently_inked.csv` (FPC's
-   historical inking ledger) is out of scope here and moves to Phase 4 (see note
-   below): it depends on the `inkings` table, which doesn't exist yet.
+6. **FPC import — service logic only, no CLI.** Builds the parsing/`resolveOrFlag`/
+   duplicate-detection/persistence/commit logic as framework-agnostic **service code**
+   (`lib/server/services`, per the existing layered architecture — depends on step 5's
+   repository interfaces, not Drizzle directly). **There is no CLI, not even for local
+   testing** — the only human-facing interface for this feature is the browser, built
+   in Phase 1.1 (see `ARCHITECTURE.md`'s 2026-07-09 "all work happens through the
+   app's UI, period" rule — no shell, no SSH, no CLI, no hand-edited files, not even
+   locally, not even temporarily). This step's tests call the service functions
+   directly against a real temp-file SQLite (`mkdtempSync` + `migrateDatabase`) — the
+   exact same pattern step 3's (`resolveOrFlag`) and step 5's (repository) tests
+   already use, no subprocess, no argv parsing. **No real `db` client module needed
+   here either** — that moves to **Phase 1.1 step 1**, the first point a genuinely
+   persistent, long-running connection is actually needed (a running server checking
+   real sessions against a real database), not this one. **Scoped to
+   `collected_pens.csv` and `collected_inks.csv` only** — the catalog data.
+   `currently_inked.csv` (FPC's historical inking ledger) is out of scope here and
+   moves to Phase 4 — see `phase4-plan.md` step 5.
 
-   **This is also where the real `db` client module finally gets built** — needed for
-   the CLI to run against Ken's actual local dev database, not another disposable
-   temp-file one. Every repository test through step 5 constructs its own temp-file
-   SQLite inline (`schema.integration.test.ts`, `resolve-or-flag.integration.test.ts`
-   — `mkdtempSync` + `migrateDatabase`, torn down after each test) — proving schema
-   and repository logic, never proving the real env-var-to-connection wiring. So
-   `src/lib/server/db/client.ts` (deleted as premature scope back in step 2 — zero
-   consumers at that point) gets built for real here: reads `DATABASE_URL`, opens the
-   `better-sqlite3` connection, runs the existing `migrateDatabase` against it — same
-   function the integration tests already use, just pointed at a real file path
-   instead of a `mkdtempSync` one.
-   *Gate (in addition to the CLI gate below):* an e2e-level test — not another
-   temp-file integration test — that points `DATABASE_URL` at a real file path,
-   goes through the client module's actual construction path (not a hand-rolled
-   `Database`/`migrateDatabase` pair built directly in the test), and confirms a
-   genuine, working connection comes back. This proves the env-var-to-connection
-   wiring itself, which the repository-level integration tests never exercise.
+   **Persisted state is `import_attempts` + `import_flagged_items`, never a file.**
+   Parsing creates one `import_attempts` row (`id`, `operation_type`
+   enum(`catalog_import`/`color_refresh`), `status` enum(`open`/`committed`),
+   `created_at`, `committed_at` nullable) and one `import_flagged_items` row per row
+   needing a decision (`id`, `import_attempt_id` → import_attempts, `row_data` json —
+   a snapshot of the parsed row, so a decision survives even if the source CSV later
+   changes, `flag_type` enum(`needs_confirmation_brand`/`needs_confirmation_line`/
+   `needs_confirmation_model`/`possible_duplicate`/`unparseable_nib`), `candidate_info`
+   json nullable — match candidate id/name/similarity where applicable, `decision`
+   enum(`import`/`skip`/`merge_into`/`alias_to`) nullable, `decision_target_id`
+   integer nullable — the id for `merge_into`/`alias_to`, `decided_at` timestamp
+   nullable). Phase 1.1's review/decide UI and this step's own tests both work
+   directly against these tables through the same service functions — nothing is
+   ever written to or read from a file.
 
    **Identity, confirmed against the real export files** (not assumed): FPC's CSVs
    carry no per-record ID at all.
@@ -252,14 +252,15 @@ conversation turn out to need different answers — worth separating clearly:
    - Anything that doesn't cleanly decompose this way — an unrecognized token, or
      something that looks like an entry error rather than a real value (confirmed
      example from the real data: "sF," which doesn't match any known point size and
-     isn't a recognized abbreviation) — goes into the same review report as the
-     brand/duplicate flags, for Ken to resolve by hand, not a silent best guess.
+     isn't a recognized abbreviation) — becomes its own `import_flagged_items` row
+     (`flag_type = unparseable_nib`), same mechanism as the brand/duplicate flags,
+     for Ken to resolve through Phase 1.1's UI, not a silent best guess.
    - **Finish/color confirmed real** — "Black," "Rose Gold" etc. in the raw data are
      plating color, distinct from base material. Parsed against `finishes` (the same
      controlled list `pens.trim_color_id` uses) into `nibs.finish_id`.
 
-   Two passes:
-   - **Dry-run (default, no DB writes).** Parses the CSVs and runs step 3's
+   Two operations:
+   - **Parse (creates the attempt).** Parses the CSVs and runs step 3's
      `resolveOrFlag` for every Brand, Line, and Model value (collapses spelling
      drift, e.g. "Pilot" / "PILOT" / "Pilot Namiki" → one canonical brand; checks
      known aliases first, e.g. "Namiki" → "Pilot" resolves automatically once that
@@ -269,81 +270,80 @@ conversation turn out to need different answers — worth separating clearly:
      already in the database. Matching is fuzzy, not exact-key-only — "mistakes
      happen, data isn't always clean," so exact-match alone would miss real
      duplicates and near-miss typos both. Same similarity-scoring function step 3
-     uses — one implementation, not per-field copies. Writes a review report
-     (`import-report.json`): every row categorized as new / needs-confirmation
-     (brand, line, or model) / possible-duplicate (each flagged item paired with its
-     match candidate and similarity score). Nothing is auto-resolved — every flagged
-     item needs an explicit decision from Ken recorded back into the report before a
-     commit run will accept it: `import` (genuinely new) / `skip` /
-     `merge-into:<id>` (this row is a duplicate of an existing catalog entry) /
-     `alias-to:<type>:<id>` (this value isn't a duplicate or a typo — it's a known
-     alternate name, like "Namiki" for brand "Pilot" — resolve to the given
-     brand/line/model **and** write a new `aliases` row, so the same name resolves
-     automatically next time, without Ken having to catch it again).
-   - **Commit (`--commit --report <reviewed-report>`).** Refuses to run without a
-     reviewed report where every flagged row has a decision. Takes a backup first,
-     automatically — `sqlite3 <db-file> ".backup ..."` (WAL-safe, same method
-     `project-plan.md`'s Containerization section specifies) — before writing anything.
-     This is Ken's real collection data, worth protecting regardless of which
-     environment it's loaded into; the auto-backup exists so that isn't something Ken
-     has to remember to do by hand every time.
+     uses — one implementation, not per-field copies. Writes one `import_attempts`
+     row plus one `import_flagged_items` row per row categorized as needs-
+     confirmation (brand, line, or model) or possible-duplicate (each paired with
+     its match candidate and similarity score in `candidate_info`) — `decision` left
+     `null` on every one. Nothing is auto-resolved; nothing here writes to the
+     catalog tables yet.
+   - **Commit (`commitImportAttempt(attemptId)`).** Refuses if any
+     `import_flagged_items` row under that attempt still has `decision = null`.
+     Takes a backup first, automatically — `sqlite3 <db-file> ".backup ..."`
+     (WAL-safe, same method `project-plan.md`'s Containerization section specifies)
+     — before writing anything. Writes the catalog rows via step 5's repository,
+     marks the attempt `committed`. This is Ken's real collection data, worth
+     protecting regardless of which environment it's loaded into; the auto-backup
+     exists so that isn't something Ken has to remember to do by hand every time.
 
-   Tested against small **checked-in fixture CSVs** at `tests/fixtures/fpc-export/` —
-   deliberately including exact-duplicate, near-duplicate (typo/spacing), and
-   brand-drift cases — not Ken's live export. This is how "no live external state"
-   holds here: the import logic never needs the real file to pass CI.
-   Every dry-run and commit writes a row to `import_runs` (operation_type=
-   catalog_import) — the report summary, not the full report file, so there's a
+   Tested against small, **deliberately narrow, checked-in fixture CSVs** at
+   `tests/fixtures/fpc-export/{pens,inks}/` — one file per specific condition
+   (exact-duplicate, near-duplicate typo, brand-drift, known-alias, the `Nib`-column
+   cases: blank/bare-point-size/full-compound/malformed-token, finish-as-plating-
+   color) rather than one monolithic file, so a failing test points at exactly which
+   condition broke. This is a starting list, not exhaustive — expect it to grow.
+   Fictionalized per the standing fixture rule: invented brand/product names
+   reproducing the real drift patterns, real controlled vocabulary reused as-is.
+   Not Ken's live export — this is how "no live external state" holds here: the
+   import logic never needs the real file to pass CI.
+   For testing the commit path specifically, a test writes decisions directly into
+   `import_flagged_items` rows — standing in for what Phase 1.1's UI will eventually
+   do — then calls `commitImportAttempt` and asserts the result; no human
+   interaction is needed since the fixture's correct outcome is already known.
+   Every parse and commit writes a row to `import_runs` (operation_type=
+   catalog_import) — a lightweight summary, not the full attempt state, so there's a
    queryable history of when imports ran and what they did.
-   *Gate:* unit tests for normalization and duplicate-detection/similarity-scoring
-   (fixture cases with known expected categorization); integration test for the
-   commit-from-reviewed-report path against a real temp-file SQLite, including the
-   refusal case (unreviewed flagged row → commit rejected), the backup-file-created
-   assertion, and the `import_runs` row being written.
+   *Gate:* unit tests for parsing/duplicate-detection/similarity-scoring against
+   fixtures (known expected categorization per file); integration test for the
+   parse-then-commit path against a real temp-file SQLite, including the refusal
+   case (any flagged item with `decision = null` → commit rejected), the
+   backup-file-created assertion, and the `import_runs` row being written.
 
-7. **FPC import — Ken's real run.** Not executed by Claude as part of this phase —
-   entirely Ken's call, on his own schedule, against whatever export he currently has.
-   Dry-run first, review the report (including duplicate candidates), record decisions,
-   then commit. Explicitly **outside Phase 1's CI-gated definition of done** — the
-   phase is done once the CLI exists and passes its fixture-based tests; populating
-   real data is a deliberate action Ken takes when he's ready, not a checkbox on the
-   way to closing this phase.
+7. **FPC import — Ken's real run happens in Phase 1.1, not here.** There is no path to
+   real, human-reviewed data in Phase 1 at all — no CLI exists, and reviewing/deciding
+   on flagged items is real work on real data, which per the standing rule only ever
+   happens through the app's own UI. Phase 1's job is to prove the service logic
+   correct against fixtures; it has no mechanism, CLI or otherwise, for Ken to import
+   his actual collection, even locally, even temporarily. That capability doesn't
+   exist until Phase 1.1's authenticated review/decide UI ships — see
+   `phase1.1-plan.md`. **Explicitly outside Phase 1's CI-gated definition of done**
+   either way: the phase is done once the service logic exists and passes its
+   fixture-based tests, not once real data has been imported anywhere.
+   *Gate:* none — nothing is built by this step; it exists to state a boundary, not
+   produce an artifact.
 
-   **What this does and doesn't touch:** whatever runs during Phase 1 (Ken's own Mac,
-   in a local dev/test setup) is not the real deployment — that's the homelab instance
-   (Secondo), stood up later per `project-plan.md`'s Infrastructure section, and this
-   CLI never touches it (see the "no shell/SSH to operate the app" rule — Phase 1.1's
-   web feature is what actually gets real data onto the deployed instance). The SQLite
-   file itself is never part of the app's build/deploy artifact in either environment —
-   it's a path pointing at a persistent volume that exists independently of the app
-   image (`project-plan.md`'s Volumes section already establishes this). Nothing about
-   this CLI, or any future app install/update, creates, resets, or touches that volume
-   except through an explicit, Ken-initiated run like this one.
-   *Gate:* none from this plan — `/verify` is Ken's own judgment call on his own data,
-   whenever he runs it.
-
-   *Deferred to Phase 4:* importing `currently_inked.csv`'s historical inking records.
-   Its `Pen`/`Ink` columns don't reference catalog rows by ID either — they're
-   reconstructed description strings (e.g. `Pelikan Souverän M800, Transparent Green,
-   Acrylic, Gold, B 18K` for a pen, `Pilot Iroshizuku Kon-peki - bottle` for an ink) that
-   have to be fuzzy-matched back against the by-then-populated catalog. That's a real
-   matching problem in its own right, not a trivial join — worth calling out now so it
-   isn't underestimated when Phase 4 gets there.
+   *Deferred to Phase 4:* importing `currently_inked.csv`'s historical inking records
+   — see `phase4-plan.md` step 5 for the full reasoning (fuzzy-matching reconstructed
+   description strings back against the by-then-populated catalog — a real matching
+   problem in its own right, not a trivial join).
 
 8. **FPC color refresh — a separate, narrower operation from the main import.** Same
-   service-logic-plus-local-CLI-harness treatment as step 6 — this CLI mode is a
-   development/testing tool for the underlying diff/commit logic, not a production
-   path; Phase 1.1 wraps it in a real authenticated route. FPC's own `color` value is
-   itself crowdsourced across all its users' entries and can legitimately change over
-   time — it isn't a fixed fact Ken's import captures once and forgets. A distinct
-   mode on the same CLI (`npm run import:fpc -- refresh-color --inks <path>`),
-   update-only:
+   service-logic-only treatment as step 6 — no CLI, tested directly against fixtures,
+   persists to `import_attempts`/`import_flagged_items` exactly like the main import.
+   Real review-and-approve of an actual diff is also real work on real data — Phase
+   1.1 wraps this in its own authenticated route once it matters for real; nothing
+   here gives Ken an early, CLI-based way to run it against his real export. FPC's own
+   `color` value is itself crowdsourced across all its users' entries and can
+   legitimately change over time — it isn't a fixed fact Ken's import captures once
+   and forgets. A distinct operation, update-only:
    - Matches each CSV row against **existing** ink rows using the same natural-key
-     matching as the main import — but never creates a new row. An unmatched row is
-     skipped/flagged, not treated as new.
-   - Dry-run produces a **diff report** — ink X, old `color_fpc` → new `color_fpc` —
-     for every row where FPC's value actually changed. Nothing is applied blind.
-   - `--commit` updates only `color_fpc` on matched rows. Everything else on that ink
+     matching as the main import — but never creates a new row. An unmatched row
+     becomes an `import_flagged_items` row (`flag_type = unmatched_color_refresh`,
+     `decision` nullable) since it genuinely needs a call (skip it, or it's a sign
+     the natural key drifted and needs a manual look); a matched row with a changed
+     `color_fpc` is unambiguous (apply it or don't) and doesn't need its own
+     per-row decision — the diff is shown in the UI, and committing the attempt
+     itself is the approval.
+   - Commit updates only `color_fpc` on matched rows. Everything else on that ink
      (notes, tags, ledger entries, `color_swatch`, `color_colorimeter`,
      `color_override_source`) is untouched. Same backup-first discipline as the main
      import.
@@ -379,15 +379,16 @@ schema; it doesn't create the table. See `ARCHITECTURE.md`'s 2026-07-09 entry.
 
 ## Definition of done
 
-`brands`/`lines`/`models`/`aliases`/`pens`/`inks`/`nibs`/`pen_nibs`/`tags`/`import_runs` schema
-exists, generated via `drizzle-kit` with the migration files committed and CI's drift
-check green. The FPC import **service logic** exists (catalog import and the separate
-color-refresh mode both), is tested against fixture CSVs, and has a local CLI test
-harness Ken can run against his own dev database whenever he chooses — **actually
-populating real data is not part of this phase's done-ness**, it's a separate action on
-Ken's own schedule, and it never touches the deployed instance (see `ARCHITECTURE.md`'s
-"no shell/SSH to operate the app" rule). Real import capability on the deployed app is
-**Phase 1.1's** definition of done, not this phase's — Phase 1 only has to prove the
-underlying logic works. `/healthz` and `/metrics` live. All gates above green in CI
-(lint, typecheck, unit+coverage ≥90%, integration — now including the migration drift
-check, e2e smoke, Docker build — same jobs Phase 0 stood up, no new pipeline stages).
+`brands`/`lines`/`models`/`aliases`/`pens`/`inks`/`nibs`/`pen_nibs`/`tags`/`import_runs`/
+`import_attempts`/`import_flagged_items` schema exists, generated via `drizzle-kit` with
+the migration files committed and CI's drift check green. The FPC import **service
+logic** exists (catalog import and the separate color-refresh mode both) and is tested
+directly against fixture CSVs — **no CLI, no way for Ken to import real data anywhere,
+even locally**, since reviewing/deciding on flagged items is real work on real data and
+per the standing rule that only ever happens through the app's UI (see
+`ARCHITECTURE.md`'s "all work through the app's UI, period" rule). Real import
+capability is entirely **Phase 1.1's** definition of done, not this phase's — Phase 1
+only has to prove the underlying logic works against fixtures. `/healthz` and `/metrics`
+live. All gates above green in CI (lint, typecheck, unit+coverage ≥90%, integration —
+now including the migration drift check, e2e smoke, Docker build — same jobs Phase 0
+stood up, no new pipeline stages).

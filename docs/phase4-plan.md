@@ -98,15 +98,16 @@ the two dashboard views the vision doc confirmed as worth keeping.
    `pen_nibs`-only fallback still holds for a pen with no inkings.
 
 5. **Historical inkings import from `currently_inked.csv`** (deferred here from Phase 1
-   — see `phase1-plan.md` step 7's note). Same service-logic-plus-local-CLI-harness
-   split as Phase 1 step 6 / Phase 1.1: the parsing/matching/report/commit logic is
-   framework-agnostic service code, proven via a local CLI
-   (`npm run import:fpc -- --currently-inked <path>`, dry-run report → reviewed
-   decisions → `--commit`) — not a production path (see `ARCHITECTURE.md`'s "no
-   shell/SSH to operate the app" rule). A real authenticated web equivalent, matching
-   Phase 1.1's pattern, is a genuine gap this phase's own detailed planning pass needs
-   to close — not designed yet, flagged so it isn't hand-waved when this phase starts.
-   Not auto-run by Claude either way.
+   — see `phase1-plan.md` step 7's note). Same service-logic-only split as Phase 1
+   step 6 / Phase 1.1: the parsing/matching/commit logic is framework-agnostic service
+   code, tested directly against fixtures — **no CLI, not even for local testing** (see
+   `ARCHITECTURE.md`'s "all work through the app's UI, period" rule — there is no path
+   to importing real data outside the app's own UI, ever, for any import operation). A
+   real authenticated web equivalent, matching Phase 1.1's pattern (persisting to
+   `import_attempts`/`import_flagged_items`, reviewed/decided in the browser), is a
+   genuine gap this phase's own detailed planning pass needs to close — not designed
+   yet, flagged so it isn't hand-waved when this phase starts. Not auto-run by Claude
+   either way.
 
    The real problem here: `currently_inked.csv`'s `Pen`/`Ink` columns aren't IDs —
    they're reconstructed description strings (e.g.
@@ -114,13 +115,13 @@ the two dashboard views the vision doc confirmed as worth keeping.
    `Pilot Iroshizuku Kon-peki - bottle` for the ink, confirmed against Ken's real
    export). Each row has to be fuzzy-matched against the by-then-populated
    `pens`/`inks` catalog (built from Phase 1's import) to resolve a `pen_id`/`ink_id`
-   before it can become an `inkings` row. Ambiguous or unmatched rows go into the same
-   review-report pattern as Phase 1's catalog import — flagged, not guessed, and
-   nothing commits until Ken's resolved every flag.
+   before it can become an `inkings` row. Ambiguous or unmatched rows become their own
+   `import_flagged_items` rows, same mechanism as Phase 1's catalog import — flagged,
+   not guessed, and nothing commits until every flag is resolved through the UI.
    *Gate:* unit tests for the description-string matching/scoring logic against
    fixture rows (exact match, near-miss, ambiguous/multiple-candidate cases);
-   integration test for the commit-from-reviewed-report path, asserting each imported
-   row becomes a correctly-linked `inkings` row (`started_on`/`ended_on` from Date
+   integration test for the parse-then-commit path, asserting each imported row
+   becomes a correctly-linked `inkings` row (`started_on`/`ended_on` from Date
    Inked/Date Cleaned, `ended_on` null where FPC shows no cleaning date — i.e. still
    loaded).
 
@@ -146,8 +147,7 @@ the two dashboard views the vision doc confirmed as worth keeping.
 Full ledger lifecycle usable end-to-end. Purchase history (with rebuy/bundled-ink
 handling) and wishlist are both real, not deferred stubs. The two dashboard views from
 the vision doc's Reporting section exist and read live ledger data. The historical
-`currently_inked.csv` import's service logic exists, has a local CLI test harness, and
-is tested against fixtures — same as Phase 1's catalog import, actually running it
-against Ken's real export locally is his call, on his schedule, not part of this
-phase's done-ness; a real authenticated web equivalent is a separate, not-yet-designed
-gap (see step 5 above).
+`currently_inked.csv` import's service logic exists and is tested directly against
+fixtures — same as Phase 1's catalog import, no CLI, no path to real data outside the
+app's UI; a real authenticated web equivalent is a separate, not-yet-designed gap (see
+step 5 above).

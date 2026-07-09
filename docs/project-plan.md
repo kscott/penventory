@@ -457,24 +457,24 @@ All of the above green before any real feature exists.
 
 ### Phase 1 — Data layer
 - Drizzle schema for brands/lines/pens/inks/nibs/tags (core tables only — purchases/inkings
-  come with their respective features)
+  come with their respective features), plus `import_attempts`/`import_flagged_items` for the
+  import feature's persisted review state
 - Migrations, integration-tested against a real in-memory SQLite instance
 - FPC import **service logic** — CSV parsing (including the **brand/line normalization pass**,
   collapsing spelling drift into the canonical lists), the free-text `Nib` column parser,
-  `resolveOrFlag`/duplicate-detection integration, dry-run report generation, and commit —
-  framework-agnostic (`lib/server/services`), proven via a local CLI test harness against
-  checked-in fixture CSVs
-- **The CLI is a development/testing tool, not a production operational path** — see
-  `ARCHITECTURE.md`'s 2026-07-09 "no shell/SSH to operate the app" rule. The deployed app doesn't
-  actually gain real-import capability until Phase 1.1 wraps this same service logic in an
-  authenticated web feature.
+  `resolveOrFlag`/duplicate-detection integration, and commit — framework-agnostic
+  (`lib/server/services`), tested directly against checked-in fixture CSVs
+- **No CLI at all, not even for local testing** — see `ARCHITECTURE.md`'s 2026-07-09 "all work
+  through the app's UI, period" rule. There is no way to import real data anywhere, even locally,
+  until Phase 1.1 wraps this same service logic in an authenticated web feature.
 
 ### Phase 1.1 — Import
-- Auth (lightweight session-cookie, single seeded user) — needed here, not held for Phase 2,
-  since this is the first web-reachable feature that mutates real data
-- Authenticated import route(s): upload `collected_pens.csv`/`collected_inks.csv`, trigger
-  dry-run, review/decide flagged items in the UI (replacing hand-edited `import-report.json`),
-  commit — reuses Phase 1's service logic directly, doesn't reimplement it
+- Auth (lightweight session-cookie, single seeded user) + the real `db` client module — needed
+  here, not held for Phase 2, since this is the first thing that needs a genuine persistent
+  connection at all
+- Authenticated import route(s): upload `collected_pens.csv`/`collected_inks.csv`, parse (creates
+  `import_attempts`/`import_flagged_items`), review/decide flagged items in the UI, commit —
+  reuses Phase 1's service logic directly, doesn't reimplement it
 - Same treatment for the color-refresh operation
 - `currently_inked.csv`'s historical inking import stays in Phase 4 (Ledger) — depends on
   `inkings`, which doesn't exist yet regardless of where Import itself lands
@@ -490,7 +490,7 @@ integration + contract + Playwright tests, before moving to the next:
 - Near-Dupes view (second wave, per vision doc — after the four above)
 
 No ledger, no ratings, no AI yet — this phase only needs pen/ink/color data, populated for real
-via Phase 1.1's import feature (not Phase 1's CLI, which never touches the deployed instance).
+via Phase 1.1's import feature (there is no other way real data gets in).
 
 ### Phase 3 — Core CRUD and tagging
 - Ink/pen/nib list, show, add, edit
