@@ -237,13 +237,15 @@ export const nibPurityId = () => nib_purities.id;
 export const nibBaseSizeId = () => nib_base_sizes.id;
 export const nibPointSizeId = () => nib_point_sizes.id;
 
-// Standalone objects, owned independently of any pen (see pen_nibs, Phase 4).
-// brand_id/purity_id/finish_id/nibmeister_id are nullable — real, confirmed
-// gaps: a bare point size in FPC's data ("F"/"M"/"B" alone) means Steel + #6
-// housing + Round shape are assigned, but the manufacturer genuinely isn't
-// recorded (JoWo vs. Bock vs. other isn't knowable), and Steel nibs have no
-// karat purity at all. material_id/base_size_id/shape_id/point_size_id stay
-// required — the same bare-point-size case still assigns all four.
+// Standalone objects, owned independently of any pen — see pen_nibs below,
+// the join table that actually tracks which pen a nib is currently in, if
+// any. brand_id/purity_id/finish_id/nibmeister_id are nullable — real,
+// confirmed gaps: a bare point size in FPC's data ("F"/"M"/"B" alone) means
+// Steel + #6 housing + Round shape are assigned, but the manufacturer
+// genuinely isn't recorded (JoWo vs. Bock vs. other isn't knowable), and
+// Steel nibs have no karat purity at all. material_id/base_size_id/shape_id/
+// point_size_id stay required — the same bare-point-size case still assigns
+// all four.
 export const nibs = sqliteTable('nibs', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	brand_id: integer('brand_id').references(brandId),
@@ -262,6 +264,27 @@ export const nibs = sqliteTable('nibs', {
 	wetness: text('wetness', { enum: LEVELS }),
 	notes: text('notes'),
 	...timestamps
+});
+
+export const penId = () => pens.id;
+export const nibId = () => nibs.id;
+
+// Pulled forward from Phase 4 (see ARCHITECTURE.md's 2026-07-09 entry): the
+// FPC import needs this now to link an imported pen to the nibs row parsed
+// from its stock nib, not three phases later. removed_on null = currently
+// installed — a pen with no open pen_nibs row has no nib in it (a real,
+// confirmed case: Ken has bought pen bodies without one). Swapping a nib
+// closes the old row (removed_on set) and opens a new one; the replaced nib
+// keeps its full history rather than being overwritten. Phase 4 step 1 adds
+// the assign/remove UI and "current nib" query on top of this table, not the
+// table itself.
+export const pen_nibs = sqliteTable('pen_nibs', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	pen_id: integer('pen_id').notNull().references(penId),
+	nib_id: integer('nib_id').notNull().references(nibId),
+	installed_on: integer('installed_on', { mode: 'timestamp' }).notNull(),
+	removed_on: integer('removed_on', { mode: 'timestamp' }),
+	notes: text('notes')
 });
 
 // color/color_family are deliberately absent — both computed at read time

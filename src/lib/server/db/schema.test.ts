@@ -11,6 +11,7 @@ import {
 	modelId,
 	models,
 	nibBaseSizeId,
+	nibId,
 	nibMaterialId,
 	nibPointSizeId,
 	nibPurityId,
@@ -20,8 +21,11 @@ import {
 	nib_point_sizes,
 	nib_purities,
 	nib_shapes,
+	nibs,
+	penId,
 	penMaterialId,
 	pen_materials,
+	pens,
 	tagId,
 	tags,
 	vendorId,
@@ -48,7 +52,9 @@ describe('schema helpers', () => {
 		['nibPurityId', nibPurityId, () => nib_purities.id],
 		['nibBaseSizeId', nibBaseSizeId, () => nib_base_sizes.id],
 		['nibPointSizeId', nibPointSizeId, () => nib_point_sizes.id],
-		['tagId', tagId, () => tags.id]
+		['tagId', tagId, () => tags.id],
+		['penId', penId, () => pens.id],
+		['nibId', nibId, () => nibs.id]
 	] as const)('%s resolves to its target column', (_name, closure, expected) => {
 		expect(closure()).toBe(expected());
 	});

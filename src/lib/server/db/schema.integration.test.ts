@@ -73,6 +73,7 @@ describe('controlled-list schema', () => {
 				'nib_shapes',
 				'nibs',
 				'pen_materials',
+				'pen_nibs',
 				'pens',
 				'taggables',
 				'tags',
