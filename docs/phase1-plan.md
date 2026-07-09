@@ -165,9 +165,21 @@ conversation turn out to need different answers — worth separating clearly:
    (including that `nibs.brand_id` accepts null) and the tag/taggable polymorphic
    join. CI drift check passes.
 
-5. **Repository: pens/inks/nibs — read + raw create.** Full CRUD UI is Phase 3; a raw
-   `create` is needed here only to support import.
-   *Gate:* integration tests.
+5. **Schema: `pen_nibs`. Repository: pens/inks/nibs/pen_nibs — read + raw create.**
+   Full CRUD UI is Phase 3; a raw `create` is needed here only to support import.
+   `pen_nibs` (`id`, `pen_id` → pens, `nib_id` → nibs, `installed_on`, `removed_on`
+   nullable — null means currently installed, `notes`) is pulled forward from Phase 4
+   specifically because step 6's import needs it: every imported pen's parsed stock
+   nib becomes a real `nibs` row *and* a `pen_nibs` row linking the two, not just an
+   orphaned nib sitting in the catalog. Phase 4 step 1 still builds the assign/remove
+   UI and "current nib" query — this step only adds the schema plus a raw create/read,
+   same scope discipline as pens/inks/nibs themselves. "Read" here means what step 6
+   actually needs: get-by-id and list-all (for duplicate-detection scanning), not a
+   general query layer — full querying is Phase 2/3's job.
+   *Gate:* integration tests — one row created and read back per table (pens, inks,
+   nibs, pen_nibs), including `pen_nibs.removed_on` accepting null (currently
+   installed) and a non-null value (a closed install record), same pattern as step 4's
+   FK/null coverage.
 
 6. **FPC import CLI.** A command Ken runs himself, whenever he has a fresh export ready
    — pointed at whatever file he chooses at that moment
@@ -211,8 +223,9 @@ conversation turn out to need different answers — worth separating clearly:
 
    **Every pen row creates a linked `nibs` row too, via `pen_nibs`** — not just the
    `pens` row alone. A pen's stock nib is a first-class `nibs` row from acquisition
-   (see `phase4-plan.md` step 1), so the import has to parse FPC's free-text `Nib`
-   column into the structured fields it actually represents. Confirmed by inspecting
+   (`pen_nibs` schema lives in step 5 above, pulled forward from Phase 4 for exactly
+   this reason), so the import has to parse FPC's free-text `Nib` column into the
+   structured fields it actually represents. Confirmed by inspecting
    the real distribution across all 282 rows, this one column smashes together up to
    five distinct facts with no consistent delimiter (`"M #8 Titanium Cursive Smooth
    Italic"` = point size + base size + material + shape, all in one string) — not
@@ -342,9 +355,14 @@ Each column is added by its own migration in the phase where its dependency actu
 lands — not stubbed in early with a default that would drift out of sync with nothing
 backing it.
 
-Same logic for `pen_nibs` and `purchases`: both are relationship/history tables that
-only mean something once their owning feature (nib assignment, purchase tracking)
-exists — Phase 4, not here.
+Same logic for `purchases`: a relationship/history table that only means something
+once its owning feature (purchase tracking) exists — Phase 4, not here.
+
+`pen_nibs` is the exception, pulled forward into **step 5**: unlike `purchases`, the
+FPC import (step 6) needs it *now* to link an imported pen to the `nibs` row parsed
+from its stock nib — not deferred to whatever phase gives it a UI. Phase 4 step 1
+builds the assign/remove flow and "current nib" query on top of this already-existing
+schema; it doesn't create the table. See `ARCHITECTURE.md`'s 2026-07-09 entry.
 
 ## Definition of done
 

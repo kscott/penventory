@@ -425,8 +425,11 @@ created_at
 Phase 1 — both are computed from tables that don't exist yet. `used` is added by migration in
 **Phase 4**, once `inkings` exists (true if ≥1 ledger entry exists). `swatched` is added by
 migration in **Phase 3**, once `photos` exists (true if a swatch photo/composite exists). See
-`docs/phase1-plan.md`'s "Deferred columns" section for the full reasoning. Same logic applies
-to `pen_nibs` and `purchases` — both wait for Phase 4, the phase that gives them meaning.
+`docs/phase1-plan.md`'s "Deferred columns" section for the full reasoning. `purchases` follows
+the same logic and still waits for Phase 4. `pen_nibs` does **not** — pulled forward into
+**Phase 1 step 5**, since the FPC import needs it to link an imported pen to its parsed stock
+nib; Phase 4 step 1 builds the assign/remove UI and "current nib" query on top of that
+already-existing schema, not the schema itself. See `ARCHITECTURE.md`'s 2026-07-09 entry.
 
 ---
 

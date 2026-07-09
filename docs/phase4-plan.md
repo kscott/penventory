@@ -6,14 +6,18 @@ the two dashboard views the vision doc confirmed as worth keeping.
 
 ## Ordered steps
 
-1. **`pen_nibs`.** Assign/remove nib to/from pen, install/removed dates, "current nib
-   for this pen" query. A pen's stock nib is itself a real `nibs` row from
-   acquisition, not a placeholder — swapping in a custom nib means closing the stock
-   nib's `pen_nibs` row (`removed_on` set) and opening a new one for the replacement,
-   not deleting or overwriting anything. The stock nib keeps its full install/remove
-   history and becomes a nib with no currently-open `pen_nibs` row — i.e. a loose nib
-   in storage, the exact case Phase 6's (not-yet-designed) nib storage/location
-   tracking is meant to help find.
+1. **Nib assign/remove UI + "current nib" query.** `pen_nibs`'s schema already exists
+   — pulled forward into **Phase 1 step 5**, since the FPC import needed it to link
+   an imported pen to its parsed stock nib. This step is the service/route/UI layer
+   on top of that existing table, not the table itself: assign/remove nib to/from
+   pen, and a "current nib for this pen" query (the open — `removed_on IS NULL` —
+   `pen_nibs` row, if any). A pen's stock nib is already a real `nibs` row from
+   acquisition (Phase 1's import), not a placeholder — swapping in a custom nib
+   means closing the stock nib's `pen_nibs` row (`removed_on` set) and opening a new
+   one for the replacement, not deleting or overwriting anything. The stock nib keeps
+   its full install/remove history and becomes a nib with no currently-open
+   `pen_nibs` row — i.e. a loose nib in storage, the exact case Phase 6's
+   (not-yet-designed) nib storage/location tracking is meant to help find.
    *Gate:* full DoD tiers, plus a specific regression case: swap a pen's nib, assert
    the original nib's history is preserved (was installed from X to Y) and it now has
    no open `pen_nibs` row, while the new nib does.
