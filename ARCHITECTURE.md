@@ -264,6 +264,14 @@ one involves, not just nice-to-have. Drizzle's own migration-tracking table is s
 both of these and needs no design — it's infrastructure `drizzle-kit`/`migrate()` manage
 automatically, not a table that belongs in the app's own Data Model.
 
+**2026-07-08 — Database filename, path, and env var settled.** `project-plan.md`'s backup
+command used `penventory.db` only as an illustrative example — never an actual decided config
+value, and no env var name existed anywhere. Settled: filename `penventory.db`; dev path
+`./data/penventory.db` (gitignored); container volume mount `/data/penventory.db`; env var
+`DATABASE_URL` (Drizzle's own convention, even though SQLite isn't a network URL) holding
+`file:./data/penventory.db`. Needed now because Phase 1 step 2 (Drizzle config/migrations) and
+the Dockerfile volume mount both depend on a real value, not an example.
+
 **2026-07-08 — No improvement backlog in this file.** Was previously structured as "decision log
 for decisions made; improvement backlog for things noticed but not acted on" — a known
 anti-pattern from get-clear, where the backlog section degrades into a todo list embedded in
