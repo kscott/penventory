@@ -321,6 +321,39 @@ despite being one package name) and `papaparse` (its `unparse()` write path is g
 first-class, not an afterthought, but the library is fundamentally browser-first — web workers,
 client-side large-file streaming — a design mismatch for a Node-only CLI/route use case).
 
+**2026-07-09 — CI hardening: `any`-type ban, warning gates, dependency/image/code scanning.**
+Grouped batch, kept as its own issue separate from any phase-plan step since it's tooling, not
+feature work:
+- `@typescript-eslint/no-explicit-any` promoted from `ts.configs.recommended`'s default `warn`
+  to `error`; `npm run lint` now runs `eslint . --max-warnings 0` so no warning-level rule (this
+  one or a future one) silently passes CI. Ken's direct ask — explicit `any` should never land.
+- Found the identical gap on the typecheck side while fixing the above: `svelte-check` reports
+  Svelte's own compiler-level a11y warnings (confirmed by testing — a bare `<img>` triggers
+  `a11y_missing_attribute`) but exits 0 regardless, warnings included, by default. Fixed with
+  `--fail-on-warnings` on the `check` script — closes the a11y gap and every other svelte-check
+  warning class (unused CSS selectors, etc.), not something eslint-plugin-svelte covers (it has
+  no `a11y-*` rules at all — confirmed by inspecting its shipped rule files).
+- New `audit` CI job: `npm audit --omit=dev --audit-level=high`. `--omit=dev` excludes
+  devDependency-only findings (e.g. the `esbuild` issue nested in `drizzle-kit`'s deprecated
+  `@esbuild-kit` loader — never shipped in the Docker image); `--audit-level=high` excludes the
+  `cookie` finding pinned by `@sveltejs/kit@2.69.2` itself (`^0.6.0`, confirmed via the
+  registry — not fixable from this repo, low severity). Verified both current findings are
+  correctly filtered out (0 results) rather than the threshold being untested.
+- GitHub repo settings enabled directly via `gh api` (not the web UI): secret scanning +
+  push protection, Dependabot security updates (security only — no `dependabot.yml` for routine
+  version-update PRs, which is what generates the noise Ken's hit before on other repos), CodeQL
+  default setup, `allow_auto_merge`.
+- New `dependabot-auto-merge.yml` workflow, matching GitHub's current documented example
+  exactly (verified live, not from training data — the remembered `pull_request_target` trigger
+  was wrong, current docs use plain `pull_request`; `dependabot/fetch-metadata` pinned by commit
+  SHA behind the real current `v3.1.0` tag, verified via the registry, not the docs' own
+  possibly-stale example SHA). Auto-merges patch/minor Dependabot PRs by squash once CI is
+  green; major-version bumps still wait for a human.
+- New `docker` job step: `aquasecurity/trivy-action@v0.36.0` (verified current release, not
+  guessed) scans the built image for CRITICAL/HIGH OS-level and library CVEs with
+  `ignore-unfixed: true` — closes the gap `npm audit` leaves (it only covers npm packages, not
+  `node:22-slim`'s own OS packages, and this image is what actually runs on Secondo).
+
 **2026-07-08 — No improvement backlog in this file.** Was previously structured as "decision log
 for decisions made; improvement backlog for things noticed but not acted on" — a known
 anti-pattern from get-clear, where the backlog section degrades into a todo list embedded in

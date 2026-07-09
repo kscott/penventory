@@ -63,8 +63,26 @@ jobs:
       - run: npm ci
       - run: npm run test:e2e
 
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run audit
+
   docker:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - run: docker build -t penventory:ci .
+      - uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: penventory:ci
+          scan-type: image
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          ignore-unfixed: true
