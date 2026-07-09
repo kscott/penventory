@@ -272,6 +272,40 @@ value, and no env var name existed anywhere. Settled: filename `penventory.db`; 
 `file:./data/penventory.db`. Needed now because Phase 1 step 2 (Drizzle config/migrations) and
 the Dockerfile volume mount both depend on a real value, not an example.
 
+**2026-07-09 — SQLite driver: `better-sqlite3`, not `@libsql/client`.** `project-plan.md` said
+"Drizzle ORM" but never named the underlying client — a real gap, since it decides how the
+database file actually comes into existence. `better-sqlite3` is synchronous, has no
+network/remote-sync layer (unlike `@libsql/client`, built for Turso's embedded-replica use case
+this project doesn't have), and is the driver Drizzle's own SQLite docs lead with. Fits the
+existing "single file, single user" and "no live external system state" rules cleanly.
+
+**2026-07-09 — No shell database ships as a deploy artifact; startup migrations create the
+schema from nothing.** Restates and confirms the existing "SQLite file is never part of the
+deploy artifact" rule rather than changing it. SQLite creates the file itself, at the driver
+level, the first time something opens a connection to a path that doesn't yet exist — not
+something a migration or Drizzle has to do. On a genuinely fresh volume: the app opens
+`DATABASE_URL`, `better-sqlite3` creates an empty file at that path, then the already-decided
+apply-on-startup migration logic runs every committed migration file in order (starting from
+step 2's controlled-list schema) against that connection, building the full schema from empty.
+Nothing about this needs a distributed "shell" `.db` file, and nothing changes about how backup/
+volumes work — this is what "apply pending migrations on startup" already implied, made explicit
+because Ken asked directly whether an empty shell database needed distributing.
+
+**2026-07-09 — Fuzzy-match algorithm: Damerau-Levenshtein via the `damerau-levenshtein` npm
+package.** `resolveOrFlag` (Phase 1 step 3) and the import's duplicate detection (step 6) both
+need a deterministic, pure similarity score between two short proper-noun strings — no live
+external state, reused as one implementation in both places. Plain Levenshtein distance counts
+an adjacent-letter swap as two edits; Damerau-Levenshtein counts it as one — directly matters
+here because the concrete case already in the plan ("Piolt" flagged against "Pilot") is exactly
+a transposition, not a substitution. Verified live against the npm registry (not recalled from
+training data) before deciding: `damerau-levenshtein` v1.0.8, zero runtime dependencies, ~145M
+downloads/month despite no publish since January 2022 — read as "small, correct, algorithm-
+complete, embedded deep in the ecosystem" rather than "abandoned," given the download volume
+relative to its size. Rejected alternatives: bigram/token-overlap scoring (doesn't model
+single-character typos as directly), phonetic matching like Soundex/Metaphone (solves
+sounds-alike, not spelled-alike — wrong problem), embedding/model-based similarity (breaks the
+no-live-external-state rule, non-deterministic, overkill for short strings).
+
 **2026-07-08 — No improvement backlog in this file.** Was previously structured as "decision log
 for decisions made; improvement backlog for things noticed but not acted on" — a known
 anti-pattern from get-clear, where the backlog section degrades into a todo list embedded in
