@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import type { AnySQLiteTable, SQLiteColumn } from 'drizzle-orm/sqlite-core';
 import { create } from '../db/repository';
@@ -138,6 +138,30 @@ export function applyDecision<T extends TableWithId>(
 		return fieldDecision.decisionTargetId;
 	}
 	if (fieldDecision?.decision === 'alias_to' && fieldDecision.decisionTargetId) {
+		// (alias, aliasable_type) is unique — two rows in the same batch can
+		// legitimately share the exact same typo (e.g. two pens both entered
+		// as "Wavecrst") and both get decided alias_to the same target. Before
+		// this check, the second row's insert hit the DB's unique constraint
+		// directly and crashed the whole commit with a raw SqliteError instead
+		// of a clear message — confirmed real, reachable case, not
+		// hypothetical. Idempotent when it's genuinely the same alias -> same
+		// target; a *different* target for an identical alias string is a
+		// real conflict (two decisions disagreeing on what "Wavecrst" means)
+		// and still refuses, with a clear reason instead of a raw DB error.
+		const existing = db
+			.select()
+			.from(aliases)
+			.where(and(eq(aliases.alias, rawName), eq(aliases.aliasable_type, type)))
+			.get();
+		if (existing) {
+			if (existing.aliasable_id !== fieldDecision.decisionTargetId) {
+				throw new CommitRefusedError(
+					`"${rawName}" (${type}) is already aliased to a different id (${existing.aliasable_id}) — ` +
+						`can't also alias it to ${fieldDecision.decisionTargetId} in the same commit`
+				);
+			}
+			return fieldDecision.decisionTargetId;
+		}
 		db.insert(aliases)
 			.values({
 				alias: rawName,

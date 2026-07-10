@@ -58,6 +58,12 @@ no-silent-duplicate guarantee holds regardless of which caller is used. See
 [[docs/adr/2026-07-08-duplicate-protection-shared-resolveorflag]] and
 [[docs/adr/2026-07-09-resolveorflag-two-signals]].
 
+An `alias_to` decision is idempotent across a commit batch — two rows sharing the exact same typo,
+both decided `alias_to` the same target, produce one alias row, not a `UNIQUE constraint` crash
+that rolls back the whole commit. A second `alias_to` naming a *different* target for the same
+alias string still refuses, with a clear error rather than a raw DB exception. See
+[[docs/adr/2026-07-10-alias-to-is-idempotent-across-a-batch]].
+
 **Not every fixed vocabulary goes through this machinery.** `nib_purities`, `nib_base_sizes`,
 `nib_point_sizes` are real lookup tables (so adding a value is a data operation, not a deploy) but
 are resolved exact-match-only — deliberately excluded from fuzzy/alias treatment, since real data

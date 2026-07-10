@@ -948,6 +948,52 @@ describe('fpc-import (parse + commit)', () => {
 			});
 		});
 
+		it('two rows in the same batch sharing the same brand typo, both decided alias_to the same target, commit cleanly with one alias row — not a UNIQUE constraint crash', async () => {
+			// Confirmed bug, 2026-07-10: (alias, aliasable_type) is unique in
+			// the schema; the second row's insert previously hit that
+			// constraint directly and crashed the whole commit with a raw
+			// SqliteError, rolling back both rows even though this is a
+			// perfectly legitimate, reachable scenario — the same typo really
+			// can appear on more than one row in a real export.
+			const existingBrand = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'two-rows-same-brand-typo'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			decideField(items[0].id, 'brand', 'alias_to', existingBrand.id);
+			decideField(items[1].id, 'brand', 'alias_to', existingBrand.id);
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(2);
+			const allAliases = db.select().from(aliases).all();
+			expect(allAliases).toHaveLength(1);
+			expect(allAliases[0]).toMatchObject({
+				alias: 'Wavecrst',
+				aliasable_type: 'brand',
+				aliasable_id: existingBrand.id
+			});
+		});
+
+		it('two rows sharing the same typo, decided alias_to two DIFFERENT targets, refuses with a clear conflict error rather than a raw constraint crash', async () => {
+			const brandA = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
+			const brandB = db.insert(brands).values({ name: 'Fernhollow' }).returning().get();
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'two-rows-same-brand-typo'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			decideField(items[0].id, 'brand', 'alias_to', brandA.id);
+			decideField(items[1].id, 'brand', 'alias_to', brandB.id);
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+			expect(db.select().from(pens).all()).toEqual([]);
+		});
+
 		it('flags a new model/line ambiguity discovered only once brand context is known, and refuses to commit', async () => {
 			const brand = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
 			db.insert(models).values({ brand_id: brand.id, name: 'Vantage' }).run();
