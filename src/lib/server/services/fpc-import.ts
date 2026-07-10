@@ -24,16 +24,18 @@ import {
 	pen_materials,
 	pen_nibs,
 	pens,
+	type AliasableType,
 	type ImportFlagType
 } from '../db/schema';
 import type * as schema from '../db/schema';
 import {
 	applyDecision,
 	CommitRefusedError,
+	createControlledListRow,
 	findOrCreateExactMatchWithDecision,
-	settleField,
 	type FieldDecisions,
-	type FlagCandidateInfo
+	type FlagCandidateInfo,
+	type TableWithId
 } from './decision-resolution';
 import {
 	findDuplicateMatches,
@@ -502,10 +504,60 @@ function isItemFullyDecided(item: FlaggedItemRow): boolean {
 }
 
 type PendingFlag = {
+	// The flagged_item row this pending flag supersedes — commit updates this
+	// row in place (new row_data/flag_type/candidate_info, decision reset to
+	// null) rather than inserting a fresh one. Necessary, not cosmetic: the
+	// original row's decision/field_decisions must carry forward (a
+	// merge_into already recorded for `brand` on this same row must still
+	// apply once `model` is what's newly ambiguous), and — the actual bug
+	// this closes — inserting a separate row left the original row's
+	// decision:'import' sitting there unchanged, so every retry re-ran its
+	// resolution from scratch and re-flagged the exact same ambiguity again,
+	// forever, even after the newly-inserted row was correctly decided. See
+	// docs/adr/2026-07-10-re-flags-update-the-original-row.md.
+	originalItemId: number;
 	rowData: RowData;
 	flagType: ImportFlagType;
 	candidateInfo: Record<string, unknown> | null;
 };
+
+// Resolves a controlled-list field whose scope (brandId) wasn't known until
+// commit — model/line when Brand itself was flagged or new at parse (see
+// resolvePenFields/the ink loop in parseCatalogImport). Mirrors applyDecision
+// exactly (field_decisions first, contains-signal guard, create-on-import)
+// when a decision is already recorded for this field; otherwise resolves
+// fresh and, if still ambiguous, supersedes the *same* flagged_items row with
+// a new needs_confirmation flag instead of throwing — the ambiguity couldn't
+// have been decided in advance because it wasn't discoverable until brandId
+// was known. Returns null to tell the caller to skip writing this row this
+// pass (it'll be retried on the next commit attempt, once decided).
+function resolveDeferredField<T extends TableWithId>(
+	tx: Db,
+	item: FlaggedItemRow,
+	field: string,
+	type: AliasableType,
+	rawName: string,
+	scopeId: number,
+	table: T,
+	newFlags: PendingFlag[],
+	rowData: RowData,
+	reason: string
+): number | null {
+	const fieldDecisions = item.field_decisions as FieldDecisions | null;
+	if (fieldDecisions?.[field]) {
+		return applyDecision(tx, item, field, type, rawName, scopeId, table);
+	}
+	const result = resolveOrFlag(tx, type, rawName, scopeId);
+	if (result.outcome === 'resolved') return result.id;
+	if (result.outcome === 'new') return createControlledListRow(tx, rawName, scopeId, table);
+	newFlags.push({
+		originalItemId: item.id,
+		rowData,
+		flagType: 'needs_confirmation',
+		candidateInfo: { fields: { [field]: result }, nibValueFlags: [], reason }
+	});
+	return null;
+}
 
 // Re-resolves a row whose flag required a correction rather than a plain
 // decision: unparseable_row (required fields were blank — re-check row_data
@@ -542,10 +594,23 @@ function resolveRowForCommit(
 		}
 		const resolution = resolvePenFields(tx, rowData.raw);
 		const newRowData = buildPenRowData(rowData.raw, rowData.sourceLine, resolution);
+		// Duplicate detection was skipped at parse time (a blank required
+		// field means resolution never ran at all — see PEN_REQUIRED_FIELDS),
+		// but a correction can turn the composite key into an exact or
+		// near match of an already-committed pen just as easily as any fresh
+		// row could. Checked against tx's current view of `pens` — which, by
+		// read-your-own-writes within this same transaction, also catches a
+		// match against a pen committed earlier in *this* transaction, not
+		// only the catalog as it stood before commit started. Without this,
+		// a corrected row committed as a silent, undetected duplicate — see
+		// docs/adr/2026-07-10-flag-signals-are-not-mutually-exclusive.md's
+		// sibling finding.
+		const dupMatches = findDuplicateMatches(newRowData.compositeKey, loadExistingPenKeys(tx), []);
 		const flaggedFields = fieldsNeedingConfirmation(penFlaggableResolutions(resolution));
-		const flag = determineFlag([], resolution.nib, flaggedFields);
+		const flag = determineFlag(dupMatches, resolution.nib, flaggedFields);
 		if (flag) {
 			newFlags.push({
+				originalItemId: item.id,
 				rowData: newRowData,
 				flagType: flag.flagType,
 				candidateInfo: flag.candidateInfo
@@ -595,6 +660,7 @@ function resolveRowForCommit(
 		const flag = determineFlag([], nib, flaggedFields);
 		if (flag) {
 			newFlags.push({
+				originalItemId: item.id,
 				rowData: updatedRowData,
 				flagType: flag.flagType,
 				candidateInfo: flag.candidateInfo
@@ -644,18 +710,34 @@ export async function commitImportAttempt(
 	} catch (err) {
 		if (newFlags.length > 0) {
 			// The transaction above rolled back everything, including any
-			// attempt to record these — insert them now, outside the rolled-
+			// attempt to record these — write them now, outside the rolled-
 			// back transaction, so Ken actually sees what needs a second
 			// decision instead of the refusal just vanishing.
-			for (const { rowData, flagType, candidateInfo } of newFlags) {
-				db.insert(import_flagged_items)
-					.values({
-						import_attempt_id: attemptId,
+			//
+			// Updates the *original* row (by originalItemId) rather than
+			// inserting a new one — field_decisions is preserved (a merge_into
+			// already recorded for e.g. `brand` on this row must still apply
+			// once `model` is what's newly ambiguous), while decision/
+			// decision_target_id/decided_at reset to null so the row requires
+			// a fresh, explicit decision for whatever it now represents. This
+			// is what makes retrying commit actually converge: before, the
+			// original row's decision stayed 'import' untouched, so every
+			// retry re-ran its resolution from scratch and re-flagged the
+			// exact same ambiguity again — inserting yet another row every
+			// time — even after the previously-inserted row was correctly
+			// decided, permanently blocking the whole attempt. See
+			// docs/adr/2026-07-10-re-flags-update-the-original-row.md.
+			for (const { originalItemId, rowData, flagType, candidateInfo } of newFlags) {
+				db.update(import_flagged_items)
+					.set({
 						row_data: rowData,
 						flag_type: flagType,
 						candidate_info: candidateInfo,
-						decision: null
+						decision: null,
+						decision_target_id: null,
+						decided_at: null
 					})
+					.where(eq(import_flagged_items.id, originalItemId))
 					.run();
 			}
 		}
@@ -714,20 +796,20 @@ function runCommitTransaction(
 				if (rowData.model) {
 					modelId = applyDecision(tx, item, 'model', 'model', rowData.raw.Model, brandId, models);
 				} else {
-					const modelResult = resolveOrFlag(tx, 'model', rowData.raw.Model, brandId);
-					if (modelResult.outcome === 'flagged') {
-						newFlags.push({
-							rowData,
-							flagType: 'needs_confirmation',
-							candidateInfo: {
-								fields: { model: modelResult },
-								nibValueFlags: [],
-								reason: 'model flagged once brand context was known'
-							}
-						});
-						continue;
-					}
-					modelId = settleField(tx, 'model', rowData.raw.Model, brandId, models);
+					const resolved = resolveDeferredField(
+						tx,
+						item,
+						'model',
+						'model',
+						rowData.raw.Model,
+						brandId,
+						models,
+						newFlags,
+						rowData,
+						'model flagged once brand context was known'
+					);
+					if (resolved === null) continue;
+					modelId = resolved;
 				}
 
 				const materialId = applyDecision(
@@ -872,20 +954,20 @@ function runCommitTransaction(
 					if (rowData.line) {
 						lineId = applyDecision(tx, item, 'line', 'line', rowData.raw.Line, brandId, lines);
 					} else {
-						const lineResult = resolveOrFlag(tx, 'line', rowData.raw.Line, brandId);
-						if (lineResult.outcome === 'flagged') {
-							newFlags.push({
-								rowData,
-								flagType: 'needs_confirmation',
-								candidateInfo: {
-									fields: { line: lineResult },
-									nibValueFlags: [],
-									reason: 'line flagged once brand context was known'
-								}
-							});
-							continue;
-						}
-						lineId = settleField(tx, 'line', rowData.raw.Line, brandId, lines);
+						const resolved = resolveDeferredField(
+							tx,
+							item,
+							'line',
+							'line',
+							rowData.raw.Line,
+							brandId,
+							lines,
+							newFlags,
+							rowData,
+							'line flagged once brand context was known'
+						);
+						if (resolved === null) continue;
+						lineId = resolved;
 					}
 				}
 

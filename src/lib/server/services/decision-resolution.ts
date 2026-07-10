@@ -13,7 +13,7 @@ import type * as schema from '../db/schema';
 import type { NibFieldFlag } from './nib-parser';
 
 type Db = BetterSQLite3Database<typeof schema>;
-type TableWithId = AnySQLiteTable & { id: SQLiteColumn };
+export type TableWithId = AnySQLiteTable & { id: SQLiteColumn };
 type FlaggedItemRow = typeof import_flagged_items.$inferSelect;
 
 // The shape parseCatalogImport writes to candidate_info — see fpc-import.ts's
@@ -56,7 +56,12 @@ export type FieldDecisions = Record<
 
 export class CommitRefusedError extends Error {}
 
-function createControlledListRow<T extends TableWithId>(
+// Exported for fpc-import.ts's deferred model/line resolution (brand context
+// wasn't known at parse time) — it needs the exact same "create if genuinely
+// new" step settleField uses internally, but wrapped with its own
+// flagged-outcome handling (push a pending re-flag rather than throw) instead
+// of settleField's throw-on-still-ambiguous behavior.
+export function createControlledListRow<T extends TableWithId>(
 	db: Db,
 	rawName: string,
 	scopeId: number | undefined,

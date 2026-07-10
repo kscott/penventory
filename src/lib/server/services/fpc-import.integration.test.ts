@@ -25,6 +25,7 @@ import {
 	pen_nibs,
 	pens
 } from '../db/schema';
+import type { FieldDecisions } from './decision-resolution';
 import { CommitRefusedError, commitImportAttempt, parseCatalogImport } from './fpc-import';
 
 const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures', 'fpc-export');
@@ -964,16 +965,58 @@ describe('fpc-import (parse + commit)', () => {
 			);
 
 			expect(db.select().from(pens).all()).toEqual([]);
+			// Re-flagging updates the *same* row in place — see
+			// docs/adr/2026-07-10-re-flags-update-the-original-row.md — not a
+			// second row. field_decisions.brand (decided above) survives the
+			// update; only flag_type/candidate_info/decision change.
 			const items = flaggedItemsFor(attemptId);
-			expect(items).toHaveLength(2);
-			const newItem = items.find((i) => i.id !== item.id)!;
-			expect(newItem.flag_type).toBe('needs_confirmation');
-			expect(newItem.decision).toBeNull();
+			expect(items).toHaveLength(1);
+			const reflagged = items[0];
+			expect(reflagged.id).toBe(item.id);
+			expect(reflagged.flag_type).toBe('needs_confirmation');
+			expect(reflagged.decision).toBeNull();
+			const candidateInfo = reflagged.candidate_info as { fields: Record<string, unknown> };
+			expect(candidateInfo.fields.model).toBeDefined();
+			expect((reflagged.field_decisions as FieldDecisions).brand.decision).toBe('merge_into');
 		});
 
-		it('flags a new line ambiguity discovered only once brand context is known (ink-side counterpart), and refuses to commit', async () => {
+		it('a model ambiguity discovered only once brand context is known can actually be resolved on retry via merge_into — confirmed bug, 2026-07-10: before the fix, every retry re-ran resolution from scratch and re-flagged the same row again, forever, with no way to ever get past it', async () => {
+			const brand = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
+			const existingModel = db
+				.insert(models)
+				.values({ brand_id: brand.id, name: 'Vantage' })
+				.returning()
+				.get();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'model-drift-after-brand-resolved'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			decideField(item.id, 'brand', 'merge_into', brand.id);
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+
+			// Same row, now re-flagged for model — decide it and retry.
+			decideField(item.id, 'model', 'merge_into', existingModel.id);
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(1);
+
+			const pen = db.select().from(pens).all()[0];
+			expect(pen.brand_id).toBe(brand.id);
+			expect(pen.model_id).toBe(existingModel.id);
+			expect(db.select().from(models).all()).toHaveLength(1);
+		});
+
+		it('flags a new line ambiguity discovered only once brand context is known (ink-side counterpart), and refuses to commit — same row updated in place, resolvable on retry', async () => {
 			const brand = db.insert(brands).values({ name: 'Thistlebrook' }).returning().get();
-			db.insert(lines).values({ brand_id: brand.id, name: 'Woodland' }).run();
+			const existingLine = db
+				.insert(lines)
+				.values({ brand_id: brand.id, name: 'Woodland' })
+				.returning()
+				.get();
 
 			const { attemptId } = parseCatalogImport(db, {
 				pensCSV: fixture('pens', 'empty'),
@@ -987,12 +1030,20 @@ describe('fpc-import (parse + commit)', () => {
 				CommitRefusedError
 			);
 
-			expect(db.select().from(inks).all()).toEqual([]);
 			const items = flaggedItemsFor(attemptId);
-			expect(items).toHaveLength(2);
-			const newItem = items.find((i) => i.id !== item.id)!;
-			expect(newItem.flag_type).toBe('needs_confirmation');
-			expect(newItem.decision).toBeNull();
+			expect(items).toHaveLength(1);
+			expect(items[0].id).toBe(item.id);
+			expect(items[0].flag_type).toBe('needs_confirmation');
+			expect(items[0].decision).toBeNull();
+
+			decideField(item.id, 'line', 'merge_into', existingLine.id);
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.inksCreated).toBe(1);
+
+			const ink = db.select().from(inks).all()[0];
+			expect(ink.brand_id).toBe(brand.id);
+			expect(ink.line_id).toBe(existingLine.id);
+			expect(db.select().from(lines).all()).toHaveLength(1);
 		});
 
 		it('commits an ink with a real line, resolving/creating it under the brand', async () => {
@@ -1143,7 +1194,77 @@ describe('fpc-import (parse + commit)', () => {
 			expect(brand?.name).toBe('Fernhollow');
 		});
 
-		it('an unparseable_row, corrected to a value that is itself now ambiguous, gets re-flagged rather than committed blind', async () => {
+		it('an unparseable_row correction that now matches an existing pen is caught as a possible_duplicate, not silently committed as a second copy — confirmed bug, 2026-07-10', async () => {
+			// The original unparseable_row check (blank Brand) has nothing to
+			// run duplicate detection against — resolution is skipped entirely
+			// (see docs/adr/2026-07-10-unparseable-rows-are-correctable.md).
+			// Once corrected, the row's composite key can now exactly match an
+			// existing pen, same as any freshly-parsed row could — but the
+			// re-resolution path passed an empty array for dupMatches
+			// unconditionally, so this was never checked. The row committed as
+			// a brand-new, fully duplicate pen with no flag and no error.
+			seedExistingPen(db, {
+				brand: 'Fernhollow',
+				model: 'Rambler',
+				color: 'Moss',
+				material: 'Celluloid',
+				trimColor: 'Silver',
+				fillingSystem: 'Eyedropper'
+			});
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'blank-brand'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Brand', 'Fernhollow');
+			decideRow(item.id, 'import');
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+			// The seeded existing pen is still there; no second copy.
+			expect(db.select().from(pens).all()).toHaveLength(1);
+
+			// Re-flagged in place — same row, not a second one — see
+			// docs/adr/2026-07-10-re-flags-update-the-original-row.md.
+			const items = flaggedItemsFor(attemptId);
+			expect(items).toHaveLength(1);
+			expect(items[0].id).toBe(item.id);
+			expect(items[0].flag_type).toBe('possible_duplicate');
+			expect(items[0].decision).toBeNull();
+		});
+
+		it('an unparseable_row correction that now matches an existing pen can still be imported once the reviewer confirms it — not a permanent block, and not stuck re-flagging forever on retry', async () => {
+			seedExistingPen(db, {
+				brand: 'Fernhollow',
+				model: 'Rambler',
+				color: 'Moss',
+				material: 'Celluloid',
+				trimColor: 'Silver',
+				fillingSystem: 'Eyedropper'
+			});
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'blank-brand'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Brand', 'Fernhollow');
+			decideRow(item.id, 'import');
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+			// Same row, re-flagged as possible_duplicate — decide it directly.
+			decideRow(item.id, 'import');
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(1);
+			expect(db.select().from(pens).all()).toHaveLength(2);
+		});
+
+		it('an unparseable_row, corrected to a value that is itself now ambiguous, gets re-flagged (same row, in place) rather than committed blind', async () => {
 			db.insert(brands).values({ name: 'Wavecrest' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
@@ -1160,10 +1281,10 @@ describe('fpc-import (parse + commit)', () => {
 
 			expect(db.select().from(pens).all()).toEqual([]);
 			const items = flaggedItemsFor(attemptId);
-			expect(items).toHaveLength(2);
-			const newItem = items.find((i) => i.id !== item.id)!;
-			expect(newItem.flag_type).toBe('needs_confirmation');
-			expect(newItem.decision).toBeNull();
+			expect(items).toHaveLength(1);
+			expect(items[0].id).toBe(item.id);
+			expect(items[0].flag_type).toBe('needs_confirmation');
+			expect(items[0].decision).toBeNull();
 		});
 
 		it('an unparseable_nib, corrected via row_data.raw.Nib and decided "import", resolves and commits cleanly', async () => {
@@ -1439,10 +1560,10 @@ describe('fpc-import (parse + commit)', () => {
 
 			expect(db.select().from(pens).all()).toEqual([]);
 			const items = flaggedItemsFor(attemptId);
-			expect(items).toHaveLength(2);
-			const newItem = items.find((i) => i.id !== item.id)!;
-			expect(newItem.flag_type).toBe('needs_confirmation');
-			const candidateInfo = newItem.candidate_info as { fields: Record<string, unknown> };
+			expect(items).toHaveLength(1);
+			expect(items[0].id).toBe(item.id);
+			expect(items[0].flag_type).toBe('needs_confirmation');
+			const candidateInfo = items[0].candidate_info as { fields: Record<string, unknown> };
 			expect(candidateInfo.fields.nib_material).toBeDefined();
 		});
 

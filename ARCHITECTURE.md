@@ -111,6 +111,19 @@ System` — every schema column with no safe default. `Nib` blank is a real, val
 Commit reads by attempt id and refuses if any item is undecided, including per-field. See
 [[docs/adr/2026-07-09-no-cli-at-all-for-import]].
 
+**A commit-time re-flag (a correction that's still ambiguous, or a model/line whose brand context
+was only just settled) updates the *same* `import_flagged_items` row rather than inserting a new
+one** — `row_data`/`flag_type`/`candidate_info` replaced, `decision`/`decision_target_id`/
+`decided_at` reset to null, `field_decisions` preserved (an already-decided field on this row must
+still apply once a different field is what's newly ambiguous). Inserting a new row instead — the
+original behavior — left the original row's stale `decision` in place, so every retry re-ran its
+resolution from scratch and re-flagged the same ambiguity again, permanently blocking the whole
+attempt no matter how the newly-inserted row was decided. Deferred model/line resolution (brand
+context wasn't known at parse time) now consults `field_decisions` the same way every other field
+does (`resolveDeferredField`, mirroring `applyDecision`) instead of only ever resolving fresh or
+re-flagging — without this, an in-place-updated re-flag would still never be actionable. See
+[[docs/adr/2026-07-10-re-flags-update-the-original-row]].
+
 **A duplicate match, an unparseable nib, and a flagged field are independent signals — a row can
 trip more than one at once**, since duplicate detection runs on raw composite-key text
 (deliberately excluding `Nib`, which an already-committed pen has no raw text to reconstruct)
