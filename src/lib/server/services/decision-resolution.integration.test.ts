@@ -5,15 +5,23 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { migrateDatabase } from '../db/migrate';
-import { aliases, brands, import_attempts, import_flagged_items } from '../db/schema';
+import {
+	aliases,
+	brands,
+	import_attempts,
+	import_flagged_items,
+	pen_materials
+} from '../db/schema';
 import type { MatchReason } from '../db/resolve-or-flag';
 import { applyDecision, CommitRefusedError, settleField } from './decision-resolution';
-import type { NeedsConfirmationCandidateInfo } from './decision-resolution';
+import type { FieldDecisions, NeedsConfirmationCandidateInfo } from './decision-resolution';
 
 // Exercises applyDecision/settleField directly — the full decision
 // permutation matrix, independent of CSV parsing — per Ken's request for an
 // explicit bundle proving exactly what's allowed to be created and what
-// isn't, not just that the pieces run.
+// isn't, not just that the pieces run. Field examples below use Brand and
+// Material (both genuinely resolvable/flaggable controlled-list fields) —
+// not Color, which is freeform text with no resolution at all.
 
 describe('applyDecision / settleField — decision permutation matrix', () => {
 	let dir: string;
@@ -33,26 +41,23 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 	});
 
 	function candidateInfoFor(
-		field: string,
-		reasons: MatchReason[],
+		fields: Record<string, MatchReason[]>,
 		candidateId = 999
 	): NeedsConfirmationCandidateInfo {
-		return {
-			decidedField: field,
-			nibValueFlags: [],
-			fields: {
-				[field]: {
-					outcome: 'flagged',
-					candidates: [{ id: candidateId, name: 'existing-brand', similarity: 0.8, reasons }]
-				}
-			}
-		};
+		const result: NeedsConfirmationCandidateInfo['fields'] = {};
+		for (const [field, reasons] of Object.entries(fields)) {
+			result[field] = {
+				outcome: 'flagged',
+				candidates: [{ id: candidateId, name: 'existing-value', similarity: 0.8, reasons }]
+			};
+		}
+		return { fields: result, nibValueFlags: [] };
 	}
 
 	function insertFlaggedItem(opts: {
 		decision?: 'import' | 'skip' | 'merge_into' | 'alias_to' | null;
-		decisionTargetId?: number | null;
 		candidateInfo?: NeedsConfirmationCandidateInfo | null;
+		fieldDecisions?: FieldDecisions | null;
 	}) {
 		const attempt = db
 			.insert(import_attempts)
@@ -67,19 +72,18 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 				flag_type: opts.candidateInfo ? 'needs_confirmation' : null,
 				candidate_info: opts.candidateInfo ?? null,
 				decision: opts.decision ?? null,
-				decision_target_id: opts.decisionTargetId ?? null
+				field_decisions: opts.fieldDecisions ?? null
 			})
 			.returning()
 			.get();
 	}
 
-	describe('this field is the one the flag names (isDecidedField = true)', () => {
+	describe('this field has its own entry in field_decisions', () => {
 		it('merge_into + a target id — reuses the existing id, creates nothing', () => {
 			const existing = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
 			const item = insertFlaggedItem({
-				decision: 'merge_into',
-				decisionTargetId: existing.id,
-				candidateInfo: candidateInfoFor('brand', ['fuzzy'])
+				candidateInfo: candidateInfoFor({ brand: ['fuzzy'] }),
+				fieldDecisions: { brand: { decision: 'merge_into', decisionTargetId: existing.id } }
 			});
 
 			const id = applyDecision(db, item, 'brand', 'brand', 'Wavecrst', undefined, brands);
@@ -92,9 +96,8 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 		it('merge_into with no target id — falls through, refuses rather than guessing', () => {
 			db.insert(brands).values({ name: 'Wavecrest' }).run();
 			const item = insertFlaggedItem({
-				decision: 'merge_into',
-				decisionTargetId: null,
-				candidateInfo: candidateInfoFor('brand', ['fuzzy'])
+				candidateInfo: candidateInfoFor({ brand: ['fuzzy'] }),
+				fieldDecisions: { brand: { decision: 'merge_into', decisionTargetId: null } }
 			});
 
 			expect(() =>
@@ -106,9 +109,8 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 		it('alias_to + a target id — records the alias, reuses the existing id, creates no new brand', () => {
 			const existing = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
 			const item = insertFlaggedItem({
-				decision: 'alias_to',
-				decisionTargetId: existing.id,
-				candidateInfo: candidateInfoFor('brand', ['fuzzy'])
+				candidateInfo: candidateInfoFor({ brand: ['fuzzy'] }),
+				fieldDecisions: { brand: { decision: 'alias_to', decisionTargetId: existing.id } }
 			});
 
 			const id = applyDecision(db, item, 'brand', 'brand', 'Wavecrst', undefined, brands);
@@ -127,9 +129,8 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 		it('alias_to with no target id — falls through, refuses rather than guessing', () => {
 			db.insert(brands).values({ name: 'Wavecrest' }).run();
 			const item = insertFlaggedItem({
-				decision: 'alias_to',
-				decisionTargetId: null,
-				candidateInfo: candidateInfoFor('brand', ['fuzzy'])
+				candidateInfo: candidateInfoFor({ brand: ['fuzzy'] }),
+				fieldDecisions: { brand: { decision: 'alias_to', decisionTargetId: null } }
 			});
 
 			expect(() =>
@@ -142,8 +143,8 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 		it('import + character-typo-only reasons ("fuzzy") — ALLOWED: creates a genuinely separate row', () => {
 			db.insert(brands).values({ name: 'Wavecrest' }).run();
 			const item = insertFlaggedItem({
-				decision: 'import',
-				candidateInfo: candidateInfoFor('brand', ['fuzzy'])
+				candidateInfo: candidateInfoFor({ brand: ['fuzzy'] }),
+				fieldDecisions: { brand: { decision: 'import', decisionTargetId: null } }
 			});
 
 			const id = applyDecision(db, item, 'brand', 'brand', 'Wavecrst', undefined, brands);
@@ -156,8 +157,8 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 		it('import + word-containment-only reasons ("contains") — DISALLOWED: refuses, creates nothing', () => {
 			db.insert(brands).values({ name: 'Larkspur' }).run();
 			const item = insertFlaggedItem({
-				decision: 'import',
-				candidateInfo: candidateInfoFor('brand', ['contains'])
+				candidateInfo: candidateInfoFor({ brand: ['contains'] }),
+				fieldDecisions: { brand: { decision: 'import', decisionTargetId: null } }
 			});
 
 			expect(() =>
@@ -169,8 +170,8 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 		it('import + both "fuzzy" and "contains" reasons — DISALLOWED: contains alone is enough to block it', () => {
 			db.insert(brands).values({ name: 'Larkspur' }).run();
 			const item = insertFlaggedItem({
-				decision: 'import',
-				candidateInfo: candidateInfoFor('brand', ['fuzzy', 'contains'])
+				candidateInfo: candidateInfoFor({ brand: ['fuzzy', 'contains'] }),
+				fieldDecisions: { brand: { decision: 'import', decisionTargetId: null } }
 			});
 
 			expect(() =>
@@ -179,17 +180,16 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 			expect(db.select().from(brands).all()).toHaveLength(1);
 		});
 
-		it('import + malformed candidate_info (decidedField set, but no matching entry in fields) — fails safe, does not block or crash', () => {
-			// candidate_info is loosely-typed JSON out of a DB column, not
-			// compiler-enforced — decidedField could in principle point at a
-			// field with no recorded candidates at all (e.g. a future caller
-			// bug). hasContainsSignal has no evidence of 'contains' here, so it
-			// must not block; absence of evidence isn't evidence of a contains
-			// match. Proves the defensive branch returns false rather than
-			// throwing a TypeError on the missing lookup.
+		it('import + malformed candidate_info (field_decisions has an entry, but candidate_info has none) — fails safe, does not block or crash', () => {
+			// candidate_info/field_decisions are loosely-typed JSON out of DB
+			// columns, not compiler-enforced — a field could in principle have
+			// a field_decisions entry with no matching candidate_info (e.g. a
+			// future caller bug). hasContainsSignal has no evidence of
+			// 'contains' here, so it must not block; absence of evidence isn't
+			// evidence of a contains match.
 			const item = insertFlaggedItem({
-				decision: 'import',
-				candidateInfo: { decidedField: 'brand', nibValueFlags: [], fields: {} }
+				candidateInfo: { fields: {}, nibValueFlags: [] },
+				fieldDecisions: { brand: { decision: 'import', decisionTargetId: null } }
 			});
 
 			const id = applyDecision(db, item, 'brand', 'brand', 'Brand New Co', undefined, brands);
@@ -200,13 +200,68 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 		});
 	});
 
-	describe('this field is NOT the one the flag names (isDecidedField = false)', () => {
-		it('decision is ignored entirely — an already-resolved value just resolves, regardless of decision', () => {
-			const existing = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
-			// decidedField is 'model', not 'brand' — this call is for 'brand'.
+	describe('two fields flagged on the same row, each independently decided — the real fix for the "only the first is workable" gap', () => {
+		it('a typo on Brand AND a typo on Material, on the same row, both get applied correctly in one commit', () => {
+			const existingBrand = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
+			const existingMaterial = db
+				.insert(pen_materials)
+				.values({ name: 'Acrylic' })
+				.returning()
+				.get();
+
 			const item = insertFlaggedItem({
-				decision: 'import',
-				candidateInfo: candidateInfoFor('model', ['fuzzy'])
+				candidateInfo: candidateInfoFor({ brand: ['fuzzy'], pen_material: ['fuzzy'] }),
+				fieldDecisions: {
+					brand: { decision: 'merge_into', decisionTargetId: existingBrand.id },
+					pen_material: { decision: 'merge_into', decisionTargetId: existingMaterial.id }
+				}
+			});
+
+			const brandId = applyDecision(db, item, 'brand', 'brand', 'Wavecrst', undefined, brands);
+			const materialId = applyDecision(
+				db,
+				item,
+				'pen_material',
+				'pen_material',
+				'Acylic',
+				undefined,
+				pen_materials
+			);
+
+			expect(brandId).toBe(existingBrand.id);
+			expect(materialId).toBe(existingMaterial.id);
+			expect(db.select().from(brands).all()).toHaveLength(1);
+			expect(db.select().from(pen_materials).all()).toHaveLength(1);
+		});
+
+		it('a typo on Brand AND a typo on Material, only Brand decided — Material still refuses at commit, not silently created', () => {
+			db.insert(brands).values({ name: 'Wavecrest' }).run();
+			db.insert(pen_materials).values({ name: 'Acrylic' }).run();
+
+			const item = insertFlaggedItem({
+				candidateInfo: candidateInfoFor({ brand: ['fuzzy'], pen_material: ['fuzzy'] }),
+				fieldDecisions: {
+					brand: { decision: 'merge_into', decisionTargetId: 1 }
+					// pen_material has no entry — not decided.
+				}
+			});
+
+			// Brand resolves fine on its own.
+			expect(applyDecision(db, item, 'brand', 'brand', 'Wavecrst', undefined, brands)).toBe(1);
+			// Material, still ambiguous with nothing decided for it, refuses.
+			expect(() =>
+				applyDecision(db, item, 'pen_material', 'pen_material', 'Acylic', undefined, pen_materials)
+			).toThrow(CommitRefusedError);
+			expect(db.select().from(pen_materials).all()).toHaveLength(1);
+		});
+	});
+
+	describe('this field has no entry in field_decisions at all', () => {
+		it('an already-resolved value just resolves — nothing to decide', () => {
+			const existing = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
+			const item = insertFlaggedItem({
+				candidateInfo: candidateInfoFor({ pen_material: ['fuzzy'] }),
+				fieldDecisions: { pen_material: { decision: 'import', decisionTargetId: null } }
 			});
 
 			const id = applyDecision(db, item, 'brand', 'brand', 'Wavecrest', undefined, brands);
@@ -215,10 +270,10 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 			expect(db.select().from(brands).all()).toHaveLength(1);
 		});
 
-		it('a genuinely new value on a non-decided field still gets created — no ambiguity to block it', () => {
+		it('a genuinely new value on an undecided field still gets created — no ambiguity to block it', () => {
 			const item = insertFlaggedItem({
-				decision: 'import',
-				candidateInfo: candidateInfoFor('model', ['fuzzy'])
+				candidateInfo: candidateInfoFor({ pen_material: ['fuzzy'] }),
+				fieldDecisions: { pen_material: { decision: 'import', decisionTargetId: null } }
 			});
 
 			const id = applyDecision(db, item, 'brand', 'brand', 'Brand New Co', undefined, brands);
@@ -229,15 +284,11 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 			expect(allBrands[0].name).toBe('Brand New Co');
 		});
 
-		it('a second, undecided ambiguous field on the same row refuses rather than silently picking a near-match', () => {
+		it('a genuinely ambiguous field with no field_decisions entry refuses rather than silently picking a near-match', () => {
 			db.insert(brands).values({ name: 'Wavecrest' }).run();
-			// The flag only ever named 'model' as decidedField — 'brand' here is
-			// a second field that also happens to be ambiguous, but nobody
-			// decided it.
 			const item = insertFlaggedItem({
-				decision: 'merge_into',
-				decisionTargetId: 1,
-				candidateInfo: candidateInfoFor('model', ['fuzzy'])
+				candidateInfo: candidateInfoFor({ brand: ['fuzzy'] }),
+				fieldDecisions: null
 			});
 
 			expect(() =>

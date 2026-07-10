@@ -86,9 +86,29 @@ rule: "current nib for this pen" prefers the most recent inking's `nib_id`, fall
 
 FPC catalog import and the color-refresh operation both persist their working state as
 `import_attempts` + `import_flagged_items` rows — never a report file. Parsing creates one
-`import_attempts` row and one `import_flagged_items` row per item needing a decision
-(`row_data` is a JSON snapshot, so a decision survives even if the source CSV later changes).
-Commit reads by attempt id and refuses if any flagged item still has `decision = null`. See
+`import_flagged_items` row per parsed CSV row, not only flagged ones (there's nowhere else the
+parsed data could live between parse and commit, given the no-file rule) — `row_data` is a JSON
+snapshot (raw CSV fields + `sourceLine`, the 1-indexed original line number), so a decision
+survives even if the source CSV later changes.
+
+**Every genuinely ambiguous field on a row gets its own decision, not just the first one found.**
+A row can have more than one ambiguous field at once (a typo on `Brand` *and* on `Material`); each
+is independently resolved via `field_decisions` (`Record<field, {decision, decisionTargetId}>`),
+not a single row-level `decision`. `decision`/`decision_target_id` stay row-level for the cases
+where there's genuinely only one judgment call: `possible_duplicate` (import-anyway or skip) and
+unconditional `skip`. See [[docs/adr/2026-07-10-per-field-decisions-not-per-row]].
+
+**A row that can't be resolved at all — a required field blank, or an unparseable `Nib` — is
+correctable, not just skippable.** `row_data.raw` is editable JSON; a review UI can fix the value
+directly, then `decision: 'import'` means "re-resolve now" — commit re-runs the real resolution
+logic against whatever `row_data.raw` currently holds, refusing again if still broken, committing
+cleanly if fixed, or re-flagging if the fix itself turns out ambiguous. `unparseable_row`'s
+required-field set for pens: `Brand`, `Model`, `Color`, `Material`, `Trim Color`, `Filling
+System` — every schema column with no safe default. `Nib` blank is a real, valid case (excluded);
+`Date Added` blank falls back to the DB's own timestamp default rather than blocking the row. See
+[[docs/adr/2026-07-10-unparseable-rows-are-correctable]].
+
+Commit reads by attempt id and refuses if any item is undecided, including per-field. See
 [[docs/adr/2026-07-09-no-cli-at-all-for-import]].
 
 ## Testing

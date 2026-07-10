@@ -1,8 +1,14 @@
+import { eq } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import type { AnySQLiteTable, SQLiteColumn } from 'drizzle-orm/sqlite-core';
 import { create } from '../db/repository';
 import { resolveOrFlag, type ResolveResult } from '../db/resolve-or-flag';
-import { aliases, import_flagged_items, type AliasableType } from '../db/schema';
+import {
+	aliases,
+	import_flagged_items,
+	type AliasableType,
+	type ImportDecision
+} from '../db/schema';
 import type * as schema from '../db/schema';
 import type { NibFieldFlag } from './nib-parser';
 
@@ -11,12 +17,21 @@ type TableWithId = AnySQLiteTable & { id: SQLiteColumn };
 type FlaggedItemRow = typeof import_flagged_items.$inferSelect;
 
 // The shape parseCatalogImport writes to candidate_info for a
-// needs_confirmation flag — see fpc-import.ts's determineFlag.
+// needs_confirmation flag — see fpc-import.ts's determineFlag. No
+// "decidedField" — every key in `fields` and every entry in `nibValueFlags`
+// is independently decidable via field_decisions (see
+// docs/adr/2026-07-10-per-field-decisions-not-per-row.md). A row can have
+// more than one ambiguous field at once (e.g. a typo on Brand *and* on
+// Material) and each gets its own answer, not just the first one found.
 export type NeedsConfirmationCandidateInfo = {
 	fields: Record<string, ResolveResult>;
 	nibValueFlags: NibFieldFlag[];
-	decidedField: string | null;
 };
+
+export type FieldDecisions = Record<
+	string,
+	{ decision: ImportDecision; decisionTargetId: number | null }
+>;
 
 export class CommitRefusedError extends Error {}
 
@@ -39,9 +54,8 @@ function createControlledListRow<T extends TableWithId>(
 // writes) to resolveOrFlag calls made for later rows referencing the same
 // name, so two rows introducing the same brand-new entity never create two.
 // Throws if resolveOrFlag still comes back 'flagged' here — that can only
-// happen for a field that was ambiguous but wasn't the one Ken's decision on
-// this row actually addressed (see applyDecision below); refusing beats
-// silently picking a near-duplicate.
+// happen for a field that's ambiguous but has no recorded field_decision
+// (see applyDecision below); refusing beats silently picking a near-dupe.
 export function settleField<T extends TableWithId>(
 	db: Db,
 	type: AliasableType,
@@ -53,7 +67,7 @@ export function settleField<T extends TableWithId>(
 	if (result.outcome === 'resolved') return result.id;
 	if (result.outcome === 'flagged') {
 		throw new CommitRefusedError(
-			`"${rawName}" (${type}) is still ambiguous and wasn't the field this row's decision addressed`
+			`"${rawName}" (${type}) is still ambiguous and has no recorded decision`
 		);
 	}
 	return createControlledListRow(db, rawName, scopeId, table);
@@ -75,12 +89,13 @@ function hasContainsSignal(item: FlaggedItemRow, field: string): boolean {
 	return fieldResult.candidates.some((c) => c.reasons.includes('contains'));
 }
 
-// A field that was flagged during parse gets its outcome from Ken's decision
-// instead of resolving fresh — but decision/decision_target_id on a flagged
-// item is single-valued, and a row can (rarely) have more than one ambiguous
-// field (see fpc-import.ts's determineFlag). Only the field recorded as
-// candidate_info.decidedField gets the special treatment; every other field
-// on the row settles normally.
+// A field that was flagged during parse gets its outcome from its own entry
+// in item.field_decisions, keyed by field name — every ambiguous field on a
+// row is independently decidable, not just one per row (see
+// docs/adr/2026-07-10-per-field-decisions-not-per-row.md). A field with no
+// entry falls through to settleField, which throws if it's still ambiguous —
+// refusing beats silently picking a near-duplicate for a field nobody
+// actually decided.
 export function applyDecision<T extends TableWithId>(
 	db: Db,
 	item: FlaggedItemRow,
@@ -90,18 +105,23 @@ export function applyDecision<T extends TableWithId>(
 	scopeId: number | undefined,
 	table: T
 ): number {
-	const candidateInfo = item.candidate_info as NeedsConfirmationCandidateInfo | null;
-	const isDecidedField = candidateInfo?.decidedField === field;
-	if (isDecidedField && item.decision === 'merge_into' && item.decision_target_id) {
-		return item.decision_target_id;
+	const fieldDecisions = item.field_decisions as FieldDecisions | null;
+	const fieldDecision = fieldDecisions?.[field];
+
+	if (fieldDecision?.decision === 'merge_into' && fieldDecision.decisionTargetId) {
+		return fieldDecision.decisionTargetId;
 	}
-	if (isDecidedField && item.decision === 'alias_to' && item.decision_target_id) {
+	if (fieldDecision?.decision === 'alias_to' && fieldDecision.decisionTargetId) {
 		db.insert(aliases)
-			.values({ alias: rawName, aliasable_type: type, aliasable_id: item.decision_target_id })
+			.values({
+				alias: rawName,
+				aliasable_type: type,
+				aliasable_id: fieldDecision.decisionTargetId
+			})
 			.run();
-		return item.decision_target_id;
+		return fieldDecision.decisionTargetId;
 	}
-	if (isDecidedField && item.decision === 'import') {
+	if (fieldDecision?.decision === 'import') {
 		if (hasContainsSignal(item, field)) {
 			throw new CommitRefusedError(
 				`"${rawName}" (${type}) can't be created as a separate entity — it was flagged as a ` +
@@ -116,4 +136,36 @@ export function applyDecision<T extends TableWithId>(
 		return createControlledListRow(db, rawName, scopeId, table);
 	}
 	return settleField(db, type, rawName, scopeId, table);
+}
+
+// nib_base_size/nib_purity are exact-match-only (never fuzzy-matched — see
+// the nib-value-lookup-tables-not-enums ADR), so there's no candidate to
+// pick between; the only question is "add this as a new value or not,"
+// which still requires an explicit field_decision (decision: 'import')
+// rather than being created unconditionally — nothing gets written to the
+// catalog without a decision behind it, same rule as every other field.
+export function findOrCreateExactMatchWithDecision<T extends TableWithId & { name: SQLiteColumn }>(
+	db: Db,
+	item: FlaggedItemRow,
+	field: string,
+	table: T,
+	name: string
+): number {
+	const existing = db.select().from(table).where(eq(table.name, name)).get();
+	if (existing) return existing.id;
+
+	const fieldDecisions = item.field_decisions as FieldDecisions | null;
+	if (fieldDecisions?.[field]?.decision !== 'import') {
+		throw new CommitRefusedError(
+			`"${name}" (${field}) needs an explicit decision to add it as a new value`
+		);
+	}
+	const created = db
+		.insert(table)
+		.values({ name } as T['$inferInsert'])
+		.returning()
+		.get() as unknown as {
+		id: number;
+	};
+	return created.id;
 }

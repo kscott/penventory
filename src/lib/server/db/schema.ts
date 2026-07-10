@@ -390,10 +390,13 @@ export const importAttemptId = () => import_attempts.id;
 // types get added). The specific field lives in candidate_info instead
 // (`{ field: 'nib_material', ... }`), so the enum doesn't have to grow with
 // it. unmatched_color_refresh is added by step 8's own migration, not here.
+// unparseable_row: a required field (not just the Nib column) was blank —
+// see docs/adr/2026-07-10-unparseable-rows-are-correctable.md.
 export const IMPORT_FLAG_TYPES = [
 	'needs_confirmation',
 	'possible_duplicate',
-	'unparseable_nib'
+	'unparseable_nib',
+	'unparseable_row'
 ] as const;
 export type ImportFlagType = (typeof IMPORT_FLAG_TYPES)[number];
 
@@ -408,9 +411,9 @@ export type ImportDecision = (typeof IMPORT_DECISIONS)[number];
 // human decision — parse sets decision = 'import' on those immediately, so
 // "commit refuses if any decision is null" still means exactly what the ADR
 // says: a row only blocks commit while something about it is genuinely
-// undecided. row_data always carries { entityType: 'pen' | 'ink', ... } —
-// entityType lives in the JSON rather than its own column, since nothing
-// else needs to query on it.
+// undecided. row_data always carries { entityType: 'pen' | 'ink', sourceLine,
+// ... } — entityType/sourceLine live in the JSON rather than their own
+// columns, since nothing else needs to query on them.
 export const import_flagged_items = sqliteTable('import_flagged_items', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	import_attempt_id: integer('import_attempt_id').notNull().references(importAttemptId),
@@ -418,9 +421,23 @@ export const import_flagged_items = sqliteTable('import_flagged_items', {
 	flag_type: text('flag_type', { enum: IMPORT_FLAG_TYPES }),
 	// Match candidate(s) — id/name/similarity for possible_duplicate, the
 	// specific field name plus resolveOrFlag's candidates for
-	// needs_confirmation. Null for unparseable_nib and for clean rows.
+	// needs_confirmation. Null for unparseable_nib/unparseable_row and for
+	// clean rows.
 	candidate_info: text('candidate_info', { mode: 'json' }).$type<Record<string, unknown>>(),
+	// Row-level decision — the only thing possible_duplicate/unparseable_nib/
+	// unparseable_row actually need (one judgment call per row: import/skip,
+	// or 'import' meaning "re-resolve, I corrected row_data.raw"). For
+	// needs_confirmation with more than one ambiguous field, this is NOT
+	// enough by itself — see field_decisions below and
+	// docs/adr/2026-07-10-per-field-decisions-not-per-row.md.
 	decision: text('decision', { enum: IMPORT_DECISIONS }),
 	decision_target_id: integer('decision_target_id'),
+	// One entry per ambiguous field named in candidate_info.fields/
+	// nibValueFlags — { [field]: { decision, decisionTargetId } }. Commit
+	// refuses a needs_confirmation row until every flagged field has an
+	// entry here, not just the first one found during parse.
+	field_decisions: text('field_decisions', { mode: 'json' }).$type<
+		Record<string, { decision: ImportDecision; decisionTargetId: number | null }>
+	>(),
 	decided_at: integer('decided_at', { mode: 'timestamp' })
 });

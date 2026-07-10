@@ -27,7 +27,14 @@ import {
 	type ImportFlagType
 } from '../db/schema';
 import type * as schema from '../db/schema';
-import { applyDecision, CommitRefusedError, settleField } from './decision-resolution';
+import {
+	applyDecision,
+	CommitRefusedError,
+	findOrCreateExactMatchWithDecision,
+	settleField,
+	type FieldDecisions,
+	type NeedsConfirmationCandidateInfo
+} from './decision-resolution';
 import {
 	findDuplicateMatches,
 	type DuplicateCandidate,
@@ -43,6 +50,19 @@ type FlaggedItemRow = typeof import_flagged_items.$inferSelect;
 
 const CSV_OPTIONS = { delimiter: ';', columns: true, skip_empty_lines: true } as const;
 
+// A pen row missing any of these can't become a valid catalog entry at all —
+// see docs/adr/2026-07-10-unparseable-rows-are-correctable.md for the full
+// reasoning behind this exact set. Nib is deliberately excluded (blank is a
+// real, valid case — a pen body with no nib). Date Added is also excluded —
+// missing it falls back to the DB's own CURRENT_TIMESTAMP default rather
+// than blocking the row; losing the acquisition date is real but recoverable,
+// unlike losing what the pen even is.
+const PEN_REQUIRED_FIELDS = ['Brand', 'Model', 'Color', 'Material', 'Trim Color', 'Filling System'];
+
+function blankRequiredFields(raw: RawCsvRow, required: string[]): string[] {
+	return required.filter((key) => !raw[key] || raw[key].trim() === '');
+}
+
 // --- Row snapshots persisted in import_flagged_items.row_data --------------
 // Everything commit needs to write the row, whether or not it needed a
 // decision — see the schema comment on import_flagged_items for why this
@@ -52,6 +72,7 @@ const CSV_OPTIONS = { delimiter: ';', columns: true, skip_empty_lines: true } as
 type PenRowData = {
 	entityType: 'pen';
 	raw: RawCsvRow;
+	sourceLine: number;
 	compositeKey: string;
 	color: string;
 	notes: string | null;
@@ -72,6 +93,7 @@ type PenRowData = {
 type InkRowData = {
 	entityType: 'ink';
 	raw: RawCsvRow;
+	sourceLine: number;
 	compositeKey: string;
 	name: string;
 	type: string;
@@ -85,7 +107,19 @@ type InkRowData = {
 	maker: ResolveResult | null;
 };
 
-type RowData = PenRowData | InkRowData;
+// A required field was blank at parse time — nothing was resolved, nothing
+// was even attempted, so there's no brand/model/etc. to snapshot. Corrected
+// (row_data.raw edited) and re-resolved at commit via decision: 'import' —
+// see resolveRowForCommit.
+type UnparseableRowData = {
+	entityType: 'unparseable_row';
+	originalEntityType: 'pen' | 'ink';
+	raw: RawCsvRow;
+	sourceLine: number;
+	missingFields: string[];
+};
+
+type RowData = PenRowData | InkRowData | UnparseableRowData;
 
 // --- Composite keys for duplicate detection ---------------------------------
 // Built from the *raw* CSV field values for batch rows — a real near-dupe
@@ -162,6 +196,88 @@ function loadExistingInkKeys(db: Db): DuplicateCandidate[] {
 	}));
 }
 
+// --- Field resolution --------------------------------------------------------
+// Extracted so the exact same resolution logic runs whether a row is being
+// resolved fresh at parse, or re-resolved at commit after a correction (see
+// resolveRowForCommit) — one implementation, not two copies that could drift.
+
+type PenFieldResolution = {
+	brand: ResolveResult;
+	model: ResolveResult | null;
+	material: ResolveResult;
+	trimColor: ResolveResult;
+	fillingSystem: ResolveResult;
+	nib: ParsedNibText;
+	nibMaterial: ResolveResult | null;
+	nibShape: ResolveResult | null;
+	nibFinish: ResolveResult | null;
+};
+
+function resolvePenFields(db: Db, raw: RawCsvRow): PenFieldResolution {
+	const brand = resolveOrFlag(db, 'brand', raw.Brand);
+	const material = resolveOrFlag(db, 'pen_material', raw.Material);
+	const trimColor = resolveOrFlag(db, 'finish', raw['Trim Color']);
+	const fillingSystem = resolveOrFlag(db, 'filling_system', raw['Filling System']);
+	const model =
+		brand.outcome === 'resolved' ? resolveOrFlag(db, 'model', raw.Model, brand.id) : null;
+
+	const nib = parseNibText(db, raw.Nib);
+	let nibMaterial: ResolveResult | null = null;
+	let nibShape: ResolveResult | null = null;
+	let nibFinish: ResolveResult | null = null;
+	if (nib.kind === 'parsed') {
+		nibMaterial = resolveOrFlag(db, 'nib_material', nib.materialName);
+		nibShape = resolveOrFlag(db, 'nib_shape', nib.shapeName);
+		if (nib.finishName) nibFinish = resolveOrFlag(db, 'finish', nib.finishName);
+	}
+
+	return {
+		brand,
+		model,
+		material,
+		trimColor,
+		fillingSystem,
+		nib,
+		nibMaterial,
+		nibShape,
+		nibFinish
+	};
+}
+
+function penFlaggableResolutions(
+	resolution: PenFieldResolution
+): { field: string; result: ResolveResult }[] {
+	return [
+		{ field: 'brand', result: resolution.brand },
+		...(resolution.model ? [{ field: 'model', result: resolution.model }] : []),
+		{ field: 'pen_material', result: resolution.material },
+		{ field: 'trim_color', result: resolution.trimColor },
+		{ field: 'filling_system', result: resolution.fillingSystem },
+		...(resolution.nibMaterial ? [{ field: 'nib_material', result: resolution.nibMaterial }] : []),
+		...(resolution.nibShape ? [{ field: 'nib_shape', result: resolution.nibShape }] : []),
+		...(resolution.nibFinish ? [{ field: 'nib_finish', result: resolution.nibFinish }] : [])
+	];
+}
+
+function buildPenRowData(
+	raw: RawCsvRow,
+	sourceLine: number,
+	resolution: PenFieldResolution
+): PenRowData {
+	return {
+		entityType: 'pen',
+		raw,
+		sourceLine,
+		compositeKey: penCompositeKey(raw),
+		color: raw.Color,
+		notes: raw.Comment || null,
+		ownershipState: raw.Archived === 'true' ? 'retired' : 'active',
+		ownershipChangedOn: raw.Archived === 'true' ? raw['Archived On'] || null : null,
+		createdAt: raw['Date Added'],
+		...resolution
+	};
+}
+
 // --- Flag determination ------------------------------------------------------
 
 function fieldsNeedingConfirmation(
@@ -174,46 +290,32 @@ function fieldsNeedingConfirmation(
 	return flagged;
 }
 
+type Flag = { flagType: ImportFlagType; candidateInfo: Record<string, unknown> | null };
+
 function determineFlag(
 	dupMatches: DuplicateMatch[],
 	nib: ParsedNibText | null,
 	flaggedFields: Record<string, ResolveResult>
-): { flagType: ImportFlagType; candidateInfo: Record<string, unknown> | null } | null {
+): Flag | null {
 	if (dupMatches.length > 0) {
 		return { flagType: 'possible_duplicate', candidateInfo: { matches: dupMatches } };
 	}
 	if (nib?.kind === 'unparseable') {
-		return { flagType: 'unparseable_nib', candidateInfo: null };
+		return { flagType: 'unparseable_nib', candidateInfo: { reason: nib.reason } };
 	}
 	const nibValueFlags = nib?.kind === 'parsed' ? nib.flags : [];
-	const flaggedKeys = Object.keys(flaggedFields);
-	if (flaggedKeys.length > 0 || nibValueFlags.length > 0) {
-		// decision/decision_target_id on a flagged item is single-valued, but a
-		// row can (rarely) have more than one ambiguous field. The first
-		// flagged field (fixed, deterministic order — see the caller) is the
-		// one Ken's decision actually resolves; any other simultaneously-
-		// flagged field on the same row still can't be silently created —
-		// applyDecision refuses instead (see its comment) rather than picking
-		// a near-duplicate quietly. Rare in practice; not exhaustively solved
-		// in Phase 1, per the standing "starting list, not exhaustive" note.
-		return {
-			flagType: 'needs_confirmation',
-			candidateInfo: {
-				fields: flaggedFields,
-				nibValueFlags,
-				decidedField: flaggedKeys[0] ?? null
-			}
-		};
+	if (Object.keys(flaggedFields).length > 0 || nibValueFlags.length > 0) {
+		// Every flagged field (there can be more than one — e.g. a typo on
+		// Brand *and* on Material at once) is independently decidable via
+		// field_decisions at commit — see docs/adr/2026-07-10-per-field-
+		// decisions-not-per-row.md. No single "decidedField" here anymore.
+		const info: NeedsConfirmationCandidateInfo = { fields: flaggedFields, nibValueFlags };
+		return { flagType: 'needs_confirmation', candidateInfo: info };
 	}
 	return null;
 }
 
-function writeFlaggedItem(
-	db: Db,
-	attemptId: number,
-	rowData: RowData,
-	flag: { flagType: ImportFlagType; candidateInfo: Record<string, unknown> | null } | null
-) {
+function writeFlaggedItem(db: Db, attemptId: number, rowData: RowData, flag: Flag | null) {
 	db.insert(import_flagged_items)
 		.values({
 			import_attempt_id: attemptId,
@@ -249,63 +351,39 @@ export function parseCatalogImport(
 	let flaggedCount = 0;
 
 	for (const [index, raw] of pensRaw.entries()) {
+		const sourceLine = index + 2; // +1 for 0-index, +1 for the header row
+
+		const missingFields = blankRequiredFields(raw, PEN_REQUIRED_FIELDS);
+		if (missingFields.length > 0) {
+			const rowData: UnparseableRowData = {
+				entityType: 'unparseable_row',
+				originalEntityType: 'pen',
+				raw,
+				sourceLine,
+				missingFields
+			};
+			writeFlaggedItem(db, attempt.id, rowData, {
+				flagType: 'unparseable_row',
+				candidateInfo: { missingFields }
+			});
+			flaggedCount++;
+			continue;
+		}
+
 		const compositeKey = penCompositeKey(raw);
 		const dupMatches = findDuplicateMatches(compositeKey, existingPenKeys, batchPenKeys);
 		batchPenKeys.push({ id: index, compositeKey });
 
-		const brand = resolveOrFlag(db, 'brand', raw.Brand);
-		const material = resolveOrFlag(db, 'pen_material', raw.Material);
-		const trimColor = resolveOrFlag(db, 'finish', raw['Trim Color']);
-		const fillingSystem = resolveOrFlag(db, 'filling_system', raw['Filling System']);
-		const model =
-			brand.outcome === 'resolved' ? resolveOrFlag(db, 'model', raw.Model, brand.id) : null;
-
-		const nib = parseNibText(db, raw.Nib);
-		let nibMaterial: ResolveResult | null = null;
-		let nibShape: ResolveResult | null = null;
-		let nibFinish: ResolveResult | null = null;
-		if (nib.kind === 'parsed') {
-			nibMaterial = resolveOrFlag(db, 'nib_material', nib.materialName);
-			nibShape = resolveOrFlag(db, 'nib_shape', nib.shapeName);
-			if (nib.finishName) nibFinish = resolveOrFlag(db, 'finish', nib.finishName);
-		}
-
-		const rowData: PenRowData = {
-			entityType: 'pen',
-			raw,
-			compositeKey,
-			color: raw.Color,
-			notes: raw.Comment || null,
-			ownershipState: raw.Archived === 'true' ? 'retired' : 'active',
-			ownershipChangedOn: raw.Archived === 'true' ? raw['Archived On'] || null : null,
-			createdAt: raw['Date Added'],
-			brand,
-			model,
-			material,
-			trimColor,
-			fillingSystem,
-			nib,
-			nibMaterial,
-			nibShape,
-			nibFinish
-		};
-
-		const flaggedFields = fieldsNeedingConfirmation([
-			{ field: 'brand', result: brand },
-			...(model ? [{ field: 'model', result: model }] : []),
-			{ field: 'pen_material', result: material },
-			{ field: 'trim_color', result: trimColor },
-			{ field: 'filling_system', result: fillingSystem },
-			...(nibMaterial ? [{ field: 'nib_material', result: nibMaterial }] : []),
-			...(nibShape ? [{ field: 'nib_shape', result: nibShape }] : []),
-			...(nibFinish ? [{ field: 'nib_finish', result: nibFinish }] : [])
-		]);
-		const flag = determineFlag(dupMatches, nib, flaggedFields);
+		const resolution = resolvePenFields(db, raw);
+		const rowData = buildPenRowData(raw, sourceLine, resolution);
+		const flaggedFields = fieldsNeedingConfirmation(penFlaggableResolutions(resolution));
+		const flag = determineFlag(dupMatches, resolution.nib, flaggedFields);
 		writeFlaggedItem(db, attempt.id, rowData, flag);
 		if (flag) flaggedCount++;
 	}
 
 	for (const [index, raw] of inksRaw.entries()) {
+		const sourceLine = index + 2;
 		const compositeKey = inkCompositeKey(raw);
 		const dupMatches = findDuplicateMatches(compositeKey, existingInkKeys, batchInkKeys);
 		batchInkKeys.push({ id: index, compositeKey });
@@ -323,6 +401,7 @@ export function parseCatalogImport(
 		const rowData: InkRowData = {
 			entityType: 'ink',
 			raw,
+			sourceLine,
 			compositeKey,
 			name: raw.Name,
 			type: raw.Type,
@@ -365,8 +444,8 @@ export function parseCatalogImport(
 // --- Commit --------------------------------------------------------------
 // settleField/applyDecision/CommitRefusedError live in decision-resolution.ts
 // — extracted so their full decision-permutation matrix (merge_into/
-// alias_to/import, decided-field vs not, contains vs fuzzy-only) can be
-// tested directly and exhaustively, independent of the full CSV pipeline.
+// alias_to/import, per-field vs not, contains vs fuzzy-only) can be tested
+// directly and exhaustively, independent of the full CSV pipeline.
 
 export type CommitResult = {
 	committed: true;
@@ -375,14 +454,117 @@ export type CommitResult = {
 	nibsCreated: number;
 };
 
-function findOrCreateExactMatch(
-	db: Db,
-	table: typeof nib_base_sizes | typeof nib_purities,
-	name: string
-): number {
-	const existing = db.select().from(table).where(eq(table.name, name)).get();
-	if (existing) return existing.id;
-	return db.insert(table).values({ name }).returning().get().id;
+// Every ambiguous field named in candidate_info (fields + nibValueFlags)
+// must have its own entry in field_decisions before a needs_confirmation row
+// is considered decided — not just the first one found during parse. See
+// docs/adr/2026-07-10-per-field-decisions-not-per-row.md.
+function isItemFullyDecided(item: FlaggedItemRow): boolean {
+	if (item.decision === 'skip') return true;
+	if (item.flag_type === 'needs_confirmation') {
+		const info = item.candidate_info as NeedsConfirmationCandidateInfo | null;
+		const requiredFields = [
+			...Object.keys(info?.fields ?? {}),
+			...(info?.nibValueFlags ?? []).map((f) => f.field)
+		];
+		const decisions = (item.field_decisions as FieldDecisions | null) ?? {};
+		return requiredFields.every((field) => decisions[field] !== undefined);
+	}
+	return item.decision !== null;
+}
+
+type PendingFlag = {
+	rowData: RowData;
+	flagType: ImportFlagType;
+	candidateInfo: Record<string, unknown> | null;
+};
+
+// Re-resolves a row whose flag required a correction rather than a plain
+// decision: unparseable_row (required fields were blank — re-check row_data
+// .raw, which the review UI would have let the user edit, then resolve it
+// exactly like a fresh row) and unparseable_nib (re-parse row_data.raw.Nib
+// alone). Returns null and records a pending re-flag if the correction still
+// leaves something ambiguous — "correct it and try again" can itself surface
+// a new, different problem, same as importing fresh data always could.
+// decision: 'import' is the only way to reach this — 'skip' already
+// short-circuits before rowData is even read, and anything else
+// (merge_into/alias_to) makes no sense for a whole-row/whole-nib correction.
+function resolveRowForCommit(
+	tx: Db,
+	item: FlaggedItemRow,
+	rowData: RowData,
+	newFlags: PendingFlag[]
+): RowData | null {
+	if (rowData.entityType === 'unparseable_row') {
+		if (item.decision !== 'import') {
+			throw new CommitRefusedError(
+				`row ${item.id} (line ${rowData.sourceLine}): unparseable_row can only be 'import' (corrected, re-resolve) or 'skip'`
+			);
+		}
+		if (rowData.originalEntityType !== 'pen') {
+			throw new CommitRefusedError(
+				`row ${item.id} (line ${rowData.sourceLine}): ink unparseable_row correction isn't implemented yet`
+			);
+		}
+		const missing = blankRequiredFields(rowData.raw, PEN_REQUIRED_FIELDS);
+		if (missing.length > 0) {
+			throw new CommitRefusedError(
+				`row ${item.id} (line ${rowData.sourceLine}): still missing required fields: ${missing.join(', ')}`
+			);
+		}
+		const resolution = resolvePenFields(tx, rowData.raw);
+		const newRowData = buildPenRowData(rowData.raw, rowData.sourceLine, resolution);
+		const flaggedFields = fieldsNeedingConfirmation(penFlaggableResolutions(resolution));
+		const flag = determineFlag([], resolution.nib, flaggedFields);
+		if (flag) {
+			newFlags.push({
+				rowData: newRowData,
+				flagType: flag.flagType,
+				candidateInfo: flag.candidateInfo
+			});
+			return null;
+		}
+		return newRowData;
+	}
+
+	if (rowData.entityType === 'pen' && item.flag_type === 'unparseable_nib') {
+		if (item.decision !== 'import') {
+			throw new CommitRefusedError(
+				`row ${item.id} (line ${rowData.sourceLine}): unparseable_nib can only be 'import' (corrected, re-resolve) or 'skip'`
+			);
+		}
+		const nib = parseNibText(tx, rowData.raw.Nib);
+		if (nib.kind === 'unparseable') {
+			throw new CommitRefusedError(
+				`row ${item.id} (line ${rowData.sourceLine}): Nib still unparseable: ${nib.reason}`
+			);
+		}
+		let nibMaterial: ResolveResult | null = null;
+		let nibShape: ResolveResult | null = null;
+		let nibFinish: ResolveResult | null = null;
+		if (nib.kind === 'parsed') {
+			nibMaterial = resolveOrFlag(tx, 'nib_material', nib.materialName);
+			nibShape = resolveOrFlag(tx, 'nib_shape', nib.shapeName);
+			if (nib.finishName) nibFinish = resolveOrFlag(tx, 'finish', nib.finishName);
+		}
+		const updatedRowData: PenRowData = { ...rowData, nib, nibMaterial, nibShape, nibFinish };
+		const flaggedFields = fieldsNeedingConfirmation([
+			...(nibMaterial ? [{ field: 'nib_material', result: nibMaterial }] : []),
+			...(nibShape ? [{ field: 'nib_shape', result: nibShape }] : []),
+			...(nibFinish ? [{ field: 'nib_finish', result: nibFinish }] : [])
+		]);
+		const flag = determineFlag([], nib, flaggedFields);
+		if (flag) {
+			newFlags.push({
+				rowData: updatedRowData,
+				flagType: flag.flagType,
+				candidateInfo: flag.candidateInfo
+			});
+			return null;
+		}
+		return updatedRowData;
+	}
+
+	return rowData;
 }
 
 export async function commitImportAttempt(
@@ -400,7 +582,7 @@ export async function commitImportAttempt(
 	if (items.length === 0) {
 		throw new CommitRefusedError(`import attempt ${attemptId} has no rows`);
 	}
-	if (items.some((item) => item.decision === null)) {
+	if (items.some((item) => !isItemFullyDecided(item))) {
 		throw new CommitRefusedError(
 			`import attempt ${attemptId} still has undecided flagged items — commit refused`
 		);
@@ -411,7 +593,7 @@ export async function commitImportAttempt(
 	let pensCreated = 0;
 	let inksCreated = 0;
 	let nibsCreated = 0;
-	const newFlags: RowData[] = [];
+	const newFlags: PendingFlag[] = [];
 
 	try {
 		runCommitTransaction(db, items, attemptId, newFlags, {
@@ -425,13 +607,13 @@ export async function commitImportAttempt(
 			// attempt to record these — insert them now, outside the rolled-
 			// back transaction, so Ken actually sees what needs a second
 			// decision instead of the refusal just vanishing.
-			for (const rowData of newFlags) {
+			for (const { rowData, flagType, candidateInfo } of newFlags) {
 				db.insert(import_flagged_items)
 					.values({
 						import_attempt_id: attemptId,
 						row_data: rowData,
-						flag_type: 'needs_confirmation',
-						candidate_info: { reason: 'model/line flagged once brand context was known' },
+						flag_type: flagType,
+						candidate_info: candidateInfo,
 						decision: null
 					})
 					.run();
@@ -455,14 +637,27 @@ function runCommitTransaction(
 	db: Db,
 	items: FlaggedItemRow[],
 	attemptId: number,
-	newFlags: RowData[],
+	newFlags: PendingFlag[],
 	counters: { onPenCreated: () => void; onInkCreated: () => void; onNibCreated: () => void }
 ) {
 	db.transaction((tx) => {
 		for (const item of items) {
 			if (item.decision === 'skip') continue;
 
-			const rowData = item.row_data as unknown as RowData;
+			const rowData = resolveRowForCommit(tx, item, item.row_data as unknown as RowData, newFlags);
+			if (rowData === null) continue; // still ambiguous after correction — re-flagged, not written
+
+			if (rowData.entityType === 'unparseable_row') {
+				// Provably unreachable, not just untested: resolveRowForCommit's
+				// unparseable_row branch only ever throws, returns null, or
+				// returns a brand-new PenRowData from buildPenRowData — it can
+				// never return the original UnparseableRowData object. Left in
+				// as defense-in-depth against a future change to that function
+				// breaking the guarantee silently; TypeScript can't prove the
+				// unreachability itself (no path-sensitive narrowing across the
+				// function call), a human reading both functions together can.
+				throw new CommitRefusedError(`row ${item.id}: unresolved unparseable_row reached commit`);
+			}
 
 			if (rowData.entityType === 'pen') {
 				const brandId = applyDecision(
@@ -481,7 +676,15 @@ function runCommitTransaction(
 				} else {
 					const modelResult = resolveOrFlag(tx, 'model', rowData.raw.Model, brandId);
 					if (modelResult.outcome === 'flagged') {
-						newFlags.push(rowData);
+						newFlags.push({
+							rowData,
+							flagType: 'needs_confirmation',
+							candidateInfo: {
+								fields: { model: modelResult },
+								nibValueFlags: [],
+								reason: 'model flagged once brand context was known'
+							}
+						});
 						continue;
 					}
 					modelId = settleField(tx, 'model', rowData.raw.Model, brandId, models);
@@ -561,18 +764,21 @@ function runCommitTransaction(
 								finishes
 							)
 						: null;
-					// base_size/purity are exact-match-only lookup tables (never
-					// fuzzy-matched — see nib-parser.ts and the nib-value-
-					// lookup-tables-not-enums ADR), so a value nib-parser
-					// couldn't find gets created here, not merged/aliased —
-					// there's no candidate list to pick from, the raw text IS
-					// the correct value. This is why nib-parser flags them as
-					// needs_confirmation on the row (Ken reviews the row before
-					// it commits) rather than requiring a merge_into/alias_to-
-					// style decision that doesn't apply to this kind of table.
-					const baseSizeId = findOrCreateExactMatch(tx, nib_base_sizes, rowData.nib.baseSizeName);
+					const baseSizeId = findOrCreateExactMatchWithDecision(
+						tx,
+						item,
+						'nib_base_size',
+						nib_base_sizes,
+						rowData.nib.baseSizeName
+					);
 					const purityId = rowData.nib.purityName
-						? findOrCreateExactMatch(tx, nib_purities, rowData.nib.purityName)
+						? findOrCreateExactMatchWithDecision(
+								tx,
+								item,
+								'nib_purity',
+								nib_purities,
+								rowData.nib.purityName
+							)
 						: null;
 					// pointSize is never missing here — parseNibText only
 					// reaches 'parsed' after an exact seed-list match.
@@ -626,7 +832,15 @@ function runCommitTransaction(
 					} else {
 						const lineResult = resolveOrFlag(tx, 'line', rowData.raw.Line, brandId);
 						if (lineResult.outcome === 'flagged') {
-							newFlags.push(rowData);
+							newFlags.push({
+								rowData,
+								flagType: 'needs_confirmation',
+								candidateInfo: {
+									fields: { line: lineResult },
+									nibValueFlags: [],
+									reason: 'line flagged once brand context was known'
+								}
+							});
 							continue;
 						}
 						lineId = settleField(tx, 'line', rowData.raw.Line, brandId, lines);
@@ -661,7 +875,7 @@ function runCommitTransaction(
 			// after this throw, using the outer (non-transactional) db handle,
 			// since anything written here rolls back too.
 			throw new CommitRefusedError(
-				`${newFlags.length} row(s) needed a new decision once brand context was resolved — re-review and commit again`
+				`${newFlags.length} row(s) needed a new decision after resolution — re-review and commit again`
 			);
 		}
 

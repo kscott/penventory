@@ -71,6 +71,60 @@ describe('fpc-import (parse + commit)', () => {
 		}
 	}
 
+	// Sets a single field's decision on a needs_confirmation item — every
+	// ambiguous field is independently decided via field_decisions, not the
+	// row-level decision/decision_target_id columns (see decision-
+	// resolution.ts and docs/adr/2026-07-10-per-field-decisions-not-per-row.md).
+	function decideField(
+		itemId: number,
+		field: string,
+		decision: 'import' | 'merge_into' | 'alias_to',
+		decisionTargetId: number | null = null
+	) {
+		const item = db
+			.select()
+			.from(import_flagged_items)
+			.where(eq(import_flagged_items.id, itemId))
+			.get()!;
+		const existing = item.field_decisions ?? {};
+		db.update(import_flagged_items)
+			.set({
+				field_decisions: { ...existing, [field]: { decision, decisionTargetId } },
+				decided_at: new Date()
+			})
+			.where(eq(import_flagged_items.id, itemId))
+			.run();
+	}
+
+	// Row-level decision for unparseable_row/unparseable_nib — 'import' means
+	// "row_data.raw has been corrected, re-resolve it now." Accepts the full
+	// ImportDecision type (not just import/skip) so tests can prove the
+	// defensive guard against a nonsensical value (e.g. merge_into, which
+	// makes no sense for a whole-row/whole-nib correction).
+	function decideRow(itemId: number, decision: 'import' | 'skip' | 'merge_into' | 'alias_to') {
+		db.update(import_flagged_items)
+			.set({ decision, decided_at: new Date() })
+			.where(eq(import_flagged_items.id, itemId))
+			.run();
+	}
+
+	// Stands in for Phase 1.1's review UI editing a flagged row's raw data
+	// directly before choosing 'import' — mutates the stored row_data.raw
+	// snapshot in place.
+	function correctRawField(itemId: number, field: string, value: string) {
+		const item = db
+			.select()
+			.from(import_flagged_items)
+			.where(eq(import_flagged_items.id, itemId))
+			.get()!;
+		const rowData = item.row_data as { raw: Record<string, string> };
+		rowData.raw[field] = value;
+		db.update(import_flagged_items)
+			.set({ row_data: rowData })
+			.where(eq(import_flagged_items.id, itemId))
+			.run();
+	}
+
 	describe('parse', () => {
 		it('writes one import_attempts row and an import_runs audit row', () => {
 			const { attemptId } = parseCatalogImport(db, {
@@ -201,7 +255,9 @@ describe('fpc-import (parse + commit)', () => {
 
 			const items = flaggedItemsFor(attemptId);
 			expect(items[0].flag_type).toBe('unparseable_nib');
-			expect(items[0].candidate_info).toBeNull();
+			expect(items[0].candidate_info).toEqual({
+				reason: 'no point size found anywhere in the text'
+			});
 		});
 
 		it('flags an unparseable nib (bare custom name, no point size)', () => {
@@ -286,7 +342,7 @@ describe('fpc-import (parse + commit)', () => {
 			expect(candidateInfo.matches[0].matchType).toBe('existing');
 		});
 
-		it('a flag caused only by an unrecognized nib base_size/purity (no controlled-list field flagged) has decidedField null', () => {
+		it('a flag caused only by an unrecognized nib base_size/purity (no controlled-list field flagged) still requires its own field_decisions entry', () => {
 			const { attemptId } = parseCatalogImport(db, {
 				pensCSV: fixture('pens', 'nib-unrecognized-base-size'),
 				inksCSV: fixture('inks', 'empty')
@@ -297,11 +353,53 @@ describe('fpc-import (parse + commit)', () => {
 			const candidateInfo = items[0].candidate_info as {
 				fields: Record<string, unknown>;
 				nibValueFlags: { field: string; rawValue: string }[];
-				decidedField: string | null;
 			};
 			expect(candidateInfo.fields).toEqual({});
 			expect(candidateInfo.nibValueFlags).toEqual([{ field: 'nib_base_size', rawValue: '#7' }]);
-			expect(candidateInfo.decidedField).toBeNull();
+			expect(items[0].field_decisions).toBeNull();
+		});
+
+		it('flags a blank required field (Brand) as unparseable_row, skipping resolution entirely', () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'blank-brand'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('unparseable_row');
+			expect(items[0].candidate_info).toEqual({ missingFields: ['Brand'] });
+			const rowData = items[0].row_data as { entityType: string; missingFields: string[] };
+			expect(rowData.entityType).toBe('unparseable_row');
+			expect(rowData.missingFields).toEqual(['Brand']);
+			// No brand was ever created for this row — resolution was never
+			// attempted, not just discarded.
+			expect(db.select().from(brands).all()).toEqual([]);
+		});
+
+		it('flags two genuinely independent fields ambiguous on the same row (Brand typo AND Material typo)', () => {
+			db.insert(brands).values({ name: 'Wavecrest' }).run();
+			db.insert(pen_materials).values({ name: 'Acrylic' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'multi-field-typo'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('needs_confirmation');
+			const candidateInfo = items[0].candidate_info as { fields: Record<string, unknown> };
+			expect(Object.keys(candidateInfo.fields).sort()).toEqual(['brand', 'pen_material']);
+		});
+
+		it('tracks the source CSV line number on every row, 1-indexed including the header', () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'exact-duplicate'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId).sort((a, b) => a.id - b.id);
+			const sourceLines = items.map((item) => (item.row_data as { sourceLine: number }).sourceLine);
+			expect(sourceLines).toEqual([2, 3]);
 		});
 	});
 
@@ -351,7 +449,8 @@ describe('fpc-import (parse + commit)', () => {
 				pensCSV: fixture('pens', 'nib-unrecognized-base-size'),
 				inksCSV: fixture('inks', 'empty')
 			});
-			decideAllClean(attemptId, 'import');
+			const item = flaggedItemsFor(attemptId)[0];
+			decideField(item.id, 'nib_base_size', 'import');
 
 			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
 			expect(result.nibsCreated).toBe(1);
@@ -564,14 +663,7 @@ describe('fpc-import (parse + commit)', () => {
 			});
 
 			const item = flaggedItemsFor(attemptId)[0];
-			db.update(import_flagged_items)
-				.set({
-					decision: 'merge_into',
-					decision_target_id: existingBrand.id,
-					decided_at: new Date()
-				})
-				.where(eq(import_flagged_items.id, item.id))
-				.run();
+			decideField(item.id, 'brand', 'merge_into', existingBrand.id);
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
 
@@ -588,14 +680,7 @@ describe('fpc-import (parse + commit)', () => {
 			});
 
 			const item = flaggedItemsFor(attemptId)[0];
-			db.update(import_flagged_items)
-				.set({
-					decision: 'merge_into',
-					decision_target_id: existingBrand.id,
-					decided_at: new Date()
-				})
-				.where(eq(import_flagged_items.id, item.id))
-				.run();
+			decideField(item.id, 'brand', 'merge_into', existingBrand.id);
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
 
@@ -612,14 +697,7 @@ describe('fpc-import (parse + commit)', () => {
 			});
 
 			const item = flaggedItemsFor(attemptId)[0];
-			db.update(import_flagged_items)
-				.set({
-					decision: 'alias_to',
-					decision_target_id: existingBrand.id,
-					decided_at: new Date()
-				})
-				.where(eq(import_flagged_items.id, item.id))
-				.run();
+			decideField(item.id, 'brand', 'alias_to', existingBrand.id);
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
 
@@ -642,10 +720,7 @@ describe('fpc-import (parse + commit)', () => {
 			});
 
 			const item = flaggedItemsFor(attemptId)[0];
-			db.update(import_flagged_items)
-				.set({ decision: 'import', decided_at: new Date() })
-				.where(eq(import_flagged_items.id, item.id))
-				.run();
+			decideField(item.id, 'brand', 'import');
 
 			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
 				CommitRefusedError
@@ -662,7 +737,8 @@ describe('fpc-import (parse + commit)', () => {
 				pensCSV: fixture('pens', 'brand-drift'),
 				inksCSV: fixture('inks', 'empty')
 			});
-			decideAllClean(attemptId, 'import');
+			const item = flaggedItemsFor(attemptId)[0];
+			decideField(item.id, 'brand', 'import');
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
 
@@ -680,10 +756,7 @@ describe('fpc-import (parse + commit)', () => {
 			});
 
 			const item = flaggedItemsFor(attemptId)[0];
-			db.update(import_flagged_items)
-				.set({ decision: 'alias_to', decision_target_id: existingBrand.id, decided_at: new Date() })
-				.where(eq(import_flagged_items.id, item.id))
-				.run();
+			decideField(item.id, 'brand', 'alias_to', existingBrand.id);
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
 
@@ -705,10 +778,7 @@ describe('fpc-import (parse + commit)', () => {
 			});
 
 			const item = flaggedItemsFor(attemptId)[0];
-			db.update(import_flagged_items)
-				.set({ decision: 'merge_into', decision_target_id: brand.id, decided_at: new Date() })
-				.where(eq(import_flagged_items.id, item.id))
-				.run();
+			decideField(item.id, 'brand', 'merge_into', brand.id);
 
 			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
 				CommitRefusedError
@@ -732,10 +802,7 @@ describe('fpc-import (parse + commit)', () => {
 			});
 
 			const item = flaggedItemsFor(attemptId)[0];
-			db.update(import_flagged_items)
-				.set({ decision: 'merge_into', decision_target_id: brand.id, decided_at: new Date() })
-				.where(eq(import_flagged_items.id, item.id))
-				.run();
+			decideField(item.id, 'brand', 'merge_into', brand.id);
 
 			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
 				CommitRefusedError
@@ -846,6 +913,288 @@ describe('fpc-import (parse + commit)', () => {
 			const runs = db.select().from(import_runs).all();
 			expect(runs).toHaveLength(2);
 			expect(runs.map((r) => r.mode).sort()).toEqual(['commit', 'dry_run']);
+		});
+
+		it('an unparseable_row can be skipped outright — nothing created, no correction attempted', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'blank-brand'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			decideRow(item.id, 'skip');
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(0);
+			expect(db.select().from(pens).all()).toEqual([]);
+			expect(db.select().from(brands).all()).toEqual([]);
+		});
+
+		it('an unparseable_row decided "import" without correction refuses again — still missing the same field', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'blank-brand'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			decideRow(item.id, 'import');
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+			expect(db.select().from(pens).all()).toEqual([]);
+		});
+
+		it('an unparseable_row, corrected via row_data.raw and decided "import", resolves and commits cleanly', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'blank-brand'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Brand', 'Fernhollow');
+			decideRow(item.id, 'import');
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(1);
+
+			const pen = db.select().from(pens).all()[0];
+			const brand = db
+				.select()
+				.from(brands)
+				.all()
+				.find((b) => b.id === pen.brand_id);
+			expect(brand?.name).toBe('Fernhollow');
+		});
+
+		it('an unparseable_row, corrected to a value that is itself now ambiguous, gets re-flagged rather than committed blind', async () => {
+			db.insert(brands).values({ name: 'Wavecrest' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'blank-brand'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Brand', 'Wavecrst'); // typo of the seeded brand
+			decideRow(item.id, 'import');
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+
+			expect(db.select().from(pens).all()).toEqual([]);
+			const items = flaggedItemsFor(attemptId);
+			expect(items).toHaveLength(2);
+			const newItem = items.find((i) => i.id !== item.id)!;
+			expect(newItem.flag_type).toBe('needs_confirmation');
+			expect(newItem.decision).toBeNull();
+		});
+
+		it('an unparseable_nib, corrected via row_data.raw.Nib and decided "import", resolves and commits cleanly', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-malformed-token'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Nib', 'M');
+			decideRow(item.id, 'import');
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.nibsCreated).toBe(1);
+			expect(db.select().from(pen_nibs).all()).toHaveLength(1);
+		});
+
+		it('an unparseable_nib decided "import" without correction refuses again — Nib is still unparseable', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-malformed-token'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			decideRow(item.id, 'import');
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+			expect(db.select().from(pens).all()).toEqual([]);
+		});
+
+		it('two independently-flagged fields on one row (Brand typo AND Material typo) both resolve correctly in a single commit — the real fix for "only the first field is workable"', async () => {
+			const existingBrand = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
+			const existingMaterial = db
+				.insert(pen_materials)
+				.values({ name: 'Acrylic' })
+				.returning()
+				.get();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'multi-field-typo'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			decideField(item.id, 'brand', 'merge_into', existingBrand.id);
+			decideField(item.id, 'pen_material', 'merge_into', existingMaterial.id);
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(1);
+
+			const pen = db.select().from(pens).all()[0];
+			expect(pen.brand_id).toBe(existingBrand.id);
+			expect(pen.material_id).toBe(existingMaterial.id);
+			expect(db.select().from(brands).all()).toHaveLength(1);
+			expect(db.select().from(pen_materials).all()).toHaveLength(1);
+		});
+
+		it('a needs_confirmation row that was never decided at all (field_decisions never touched) refuses to commit', async () => {
+			db.insert(brands).values({ name: 'Wavecrest' }).run();
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'brand-drift'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+			expect(db.select().from(pens).all()).toEqual([]);
+		});
+
+		it('an unrecognized nib base_size decided with anything other than "import" still refuses — there is no candidate to merge/alias into', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-unrecognized-base-size'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			decideField(item.id, 'nib_base_size', 'merge_into', 999999);
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+			expect(
+				db
+					.select()
+					.from(nib_base_sizes)
+					.all()
+					.map((b) => b.name)
+			).not.toContain('#7');
+		});
+
+		it('an unparseable_row decided with anything other than import/skip refuses defensively', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'blank-brand'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			decideRow(item.id, 'merge_into');
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+		});
+
+		it('an unparseable_nib decided with anything other than import/skip refuses defensively', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-malformed-token'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			decideRow(item.id, 'merge_into');
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+		});
+
+		it("an ink-side unparseable_row is refused — correction isn't implemented for inks yet", async () => {
+			// Ink-side blank-required-field detection isn't wired into
+			// parseCatalogImport yet (pens-first, per the field-by-field
+			// review sequencing) — constructed directly to prove the guard
+			// exists and fails loudly rather than silently mishandling it
+			// once that gap is closed.
+			const attempt = db
+				.insert(import_attempts)
+				.values({ operation_type: 'catalog_import' })
+				.returning()
+				.get();
+			const item = db
+				.insert(import_flagged_items)
+				.values({
+					import_attempt_id: attempt.id,
+					row_data: {
+						entityType: 'unparseable_row',
+						originalEntityType: 'ink',
+						raw: { Brand: '' },
+						sourceLine: 2,
+						missingFields: ['Brand']
+					},
+					flag_type: 'unparseable_row',
+					candidate_info: { missingFields: ['Brand'] },
+					decision: null
+				})
+				.returning()
+				.get();
+			decideRow(item.id, 'import');
+
+			await expect(commitImportAttempt(db, sqlite, attempt.id, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+		});
+
+		it('correcting Nib to blank means "no nib after all" — commits the pen with no nib, not a re-thrown error', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-malformed-token'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Nib', '');
+			decideRow(item.id, 'import');
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(1);
+			expect(result.nibsCreated).toBe(0);
+			expect(db.select().from(pen_nibs).all()).toEqual([]);
+		});
+
+		it('correcting Nib to a value with a finish resolves nibFinish during re-resolution too', async () => {
+			db.insert(finishes).values({ name: 'Rose Gold' }).run();
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-malformed-token'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Nib', 'F Rose Gold');
+			decideRow(item.id, 'import');
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const nib = db.select().from(nibs).all()[0];
+			expect(nib.finish_id).not.toBeNull();
+		});
+
+		it('correcting Nib to a bare point size whose default material ("Steel") collides with an existing near-miss typo gets re-flagged, not silently created — closes the same gap as the compound-name brand case, for a default value instead of raw text', async () => {
+			// Real, plausible scenario: an earlier import created "Steal" (an
+			// uncorrected typo) as a nib_materials row. A later pen's bare
+			// point size ("M") defaults to the literal string "Steel" — which
+			// now IS ambiguous against the catalog, even though nothing about
+			// this specific row's text was ever fuzzy. Also closes the pens
+			// field-by-field review's gap #5 (2026-07-10): nib defaults can
+			// collide with existing near-miss data, never previously proven.
+			db.insert(nib_materials).values({ name: 'Steal' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-malformed-token'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Nib', 'M');
+			decideRow(item.id, 'import');
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+
+			expect(db.select().from(pens).all()).toEqual([]);
+			const items = flaggedItemsFor(attemptId);
+			expect(items).toHaveLength(2);
+			const newItem = items.find((i) => i.id !== item.id)!;
+			expect(newItem.flag_type).toBe('needs_confirmation');
+			const candidateInfo = newItem.candidate_info as { fields: Record<string, unknown> };
+			expect(candidateInfo.fields.nib_material).toBeDefined();
 		});
 	});
 });
