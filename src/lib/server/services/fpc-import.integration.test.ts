@@ -278,6 +278,46 @@ describe('fpc-import (parse + commit)', () => {
 			expect(flaggedItemsFor(attemptId)[0].flag_type).toBeNull();
 		});
 
+		it('resolves a null trim_color_id cleanly, no flag, when Trim Color is blank — real case, no trim hardware', () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'blank-trim-color'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBeNull();
+			const rowData = items[0].row_data as { trimColor: unknown };
+			expect(rowData.trimColor).toBeNull();
+		});
+
+		it('flags Filling System drift against an existing controlled-list value — confirmed real drift pattern ("Cartridge/Converter" vs "Carterdge/Converter")', () => {
+			db.insert(filling_systems).values({ name: 'Cartridge/Converter' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'filling-system-drift'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('needs_confirmation');
+			const candidateInfo = items[0].candidate_info as { fields: Record<string, unknown> };
+			expect(candidateInfo.fields.filling_system).toBeDefined();
+		});
+
+		it('flags Trim Color drift against an existing controlled-list value', () => {
+			db.insert(finishes).values({ name: 'Rhodium' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'trim-color-drift'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('needs_confirmation');
+			const candidateInfo = items[0].candidate_info as { fields: Record<string, unknown> };
+			expect(candidateInfo.fields.trim_color).toBeDefined();
+		});
+
 		it('flags a possible_duplicate against an already-committed catalog pen, not just within-batch', () => {
 			// loadExistingPenKeys/loadExistingInkKeys — every other duplicate
 			// test here uses two rows in the same batch; this is the "against
@@ -1195,6 +1235,196 @@ describe('fpc-import (parse + commit)', () => {
 			expect(newItem.flag_type).toBe('needs_confirmation');
 			const candidateInfo = newItem.candidate_info as { fields: Record<string, unknown> };
 			expect(candidateInfo.fields.nib_material).toBeDefined();
+		});
+
+		it('commits a pen with a blank Trim Color as trim_color_id = null — real case, no trim hardware', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'blank-trim-color'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const pen = db.select().from(pens).all()[0];
+			expect(pen.trim_color_id).toBeNull();
+		});
+
+		it('resolves Filling System drift via merge_into, end-to-end through the full pipeline', async () => {
+			const existing = db
+				.insert(filling_systems)
+				.values({ name: 'Cartridge/Converter' })
+				.returning()
+				.get();
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'filling-system-drift'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			decideField(item.id, 'filling_system', 'merge_into', existing.id);
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const pen = db.select().from(pens).all()[0];
+			expect(pen.filling_system_id).toBe(existing.id);
+			expect(db.select().from(filling_systems).all()).toHaveLength(1);
+		});
+
+		it('resolves Trim Color drift via merge_into, end-to-end through the full pipeline', async () => {
+			const existing = db.insert(finishes).values({ name: 'Rhodium' }).returning().get();
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'trim-color-drift'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			decideField(item.id, 'trim_color', 'merge_into', existing.id);
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const pen = db.select().from(pens).all()[0];
+			expect(pen.trim_color_id).toBe(existing.id);
+			expect(db.select().from(finishes).all()).toHaveLength(1);
+		});
+
+		it('pen.trim_color_id and nib.finish_id resolve to two distinct, correctly-named rows in the shared finishes table', async () => {
+			// 'Rose Gold' must be known vocabulary for nib-parser's exact-phrase
+			// extraction to find it in the Nib text at all — same reason the
+			// full-compound-nib test pre-seeds Titanium/Cursive Smooth Italic.
+			db.insert(finishes).values({ name: 'Rose Gold' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'finish-as-plating-color'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const pen = db.select().from(pens).all()[0];
+			const nib = db.select().from(nibs).all()[0];
+			expect(pen.trim_color_id).not.toBe(nib.finish_id);
+			const allFinishes = db.select().from(finishes).all();
+			expect(allFinishes.find((f) => f.id === pen.trim_color_id)?.name).toBe('Silver');
+			expect(allFinishes.find((f) => f.id === nib.finish_id)?.name).toBe('Rose Gold');
+		});
+
+		it('a populated Price with real currency-noise formatting ($/EUR) is safely ignored — commits cleanly', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'price-populated'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(1);
+		});
+
+		it('populated ledger columns (Usage, Last Inked, etc.) are safely ignored — commits cleanly, nothing derived from them', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'ledger-columns-populated'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(1);
+		});
+
+		it('every directly-copied/computed scalar pen field round-trips exactly: color, notes, ownership_state, created_at vs updated_at', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nullable-fields'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const before = new Date();
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const pen = db.select().from(pens).all()[0];
+			expect(pen.color).toBe('Harbor Blue');
+			expect(pen.notes).toBe('A gift from a friend');
+			expect(pen.ownership_state).toBe('active');
+			// Date Added in nullable-fields.csv is 2025-04-01 — created_at is
+			// explicitly backdated to it, not the import-time default.
+			expect(pen.created_at).toEqual(new Date('2025-04-01'));
+			// updated_at gets the DB default (import time), deliberately NOT
+			// backdated to Date Added — the two must differ. unixepoch() is
+			// second-granularity, so allow up to 1s of rounding against the
+			// millisecond-precision JS clock rather than asserting exact order.
+			expect(pen.updated_at.getTime()).not.toBe(pen.created_at.getTime());
+			expect(pen.updated_at.getTime()).toBeGreaterThanOrEqual(before.getTime() - 1000);
+		});
+
+		it('a blank Comment leaves pens.notes null, not an empty string', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-bare-point-size'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const pen = db.select().from(pens).all()[0];
+			expect(pen.notes).toBeNull();
+		});
+
+		it('two rows in the same batch introducing the same brand-new brand create only one brand row, both pens reference it', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'two-rows-same-new-brand'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			decideAllClean(attemptId, 'import');
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(2);
+
+			const allBrands = db.select().from(brands).all();
+			expect(allBrands).toHaveLength(1);
+			expect(allBrands[0].name).toBe('Emberglass');
+			const allPens = db.select().from(pens).all();
+			expect(allPens.every((p) => p.brand_id === allBrands[0].id)).toBe(true);
+		});
+
+		it('model resolves via exact match specifically in the commit-deferred branch (brand was flagged at parse, settled just before model resolution)', async () => {
+			const brand = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
+			const model = db
+				.insert(models)
+				.values({ brand_id: brand.id, name: 'Vantage' })
+				.returning()
+				.get();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'model-exact-match-after-brand-resolved'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			decideField(item.id, 'brand', 'merge_into', brand.id);
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const pen = db.select().from(pens).all()[0];
+			expect(pen.model_id).toBe(model.id);
+			expect(db.select().from(models).all()).toHaveLength(1);
+		});
+
+		it('model resolution respects brand scoping through the full pipeline — a same-named model under a different brand is never a false-positive match', async () => {
+			const fernhollow = db.insert(brands).values({ name: 'Fernhollow' }).returning().get();
+			const fernhollowModel = db
+				.insert(models)
+				.values({ brand_id: fernhollow.id, name: 'Journeyman' })
+				.returning()
+				.get();
+			const thistlebrook = db.insert(brands).values({ name: 'Thistlebrook' }).returning().get();
+			db.insert(models).values({ brand_id: thistlebrook.id, name: 'Journeyman' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'model-cross-brand-scoping'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			// Brand resolves exactly at parse (Fernhollow pre-seeded), so model
+			// resolution — also exact — happens at parse too, no flag at all.
+			expect(flaggedItemsFor(attemptId)[0].flag_type).toBeNull();
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const pen = db.select().from(pens).all()[0];
+			expect(pen.model_id).toBe(fernhollowModel.id);
+			expect(db.select().from(models).all()).toHaveLength(2);
 		});
 	});
 });

@@ -132,6 +132,23 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 			expect(pen.condition).toBeNull();
 		});
 
+		it('accepts a null trim_color_id — real, confirmed case: some pens have no plated trim hardware at all', () => {
+			const f = seedControlledLists();
+			const pen = db
+				.insert(pens)
+				.values({
+					brand_id: f.brand.id,
+					model_id: f.model.id,
+					color: 'Primary Manipulation 5.5',
+					material_id: f.penMaterial.id,
+					filling_system_id: f.fillingSystem.id,
+					ownership_state: 'active'
+				})
+				.returning()
+				.get();
+			expect(pen.trim_color_id).toBeNull();
+		});
+
 		it.each(['brand_id', 'model_id', 'material_id', 'trim_color_id', 'filling_system_id'] as const)(
 			'enforces the %s foreign key',
 			(column) => {

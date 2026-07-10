@@ -1,13 +1,21 @@
 import { sql } from 'drizzle-orm';
 import { integer, primaryKey, sqliteTable, text, unique } from 'drizzle-orm/sqlite-core';
 
+// unixepoch(), not CURRENT_TIMESTAMP — CURRENT_TIMESTAMP produces SQLite's
+// human-readable TEXT format ('2026-07-10 21:32:54'), but these columns are
+// `integer(..., { mode: 'timestamp' })`, which expects a unix epoch integer.
+// A default-populated timestamp (never explicitly set — updated_at, always;
+// created_at on every row not created via an explicit created_at like
+// import does) silently became an Invalid Date on every read. Found via a
+// test that actually called .getTime() on one instead of just
+// .not.toBeNull() — see docs/adr/2026-07-10-timestamp-default-was-invalid-date.md.
 const timestamps = {
 	created_at: integer('created_at', { mode: 'timestamp' })
 		.notNull()
-		.default(sql`(CURRENT_TIMESTAMP)`),
+		.default(sql`(unixepoch())`),
 	updated_at: integer('updated_at', { mode: 'timestamp' })
 		.notNull()
-		.default(sql`(CURRENT_TIMESTAMP)`)
+		.default(sql`(unixepoch())`)
 };
 
 // --- Controlled lists (unscoped) --------------------------------------------
@@ -195,7 +203,10 @@ export const pens = sqliteTable('pens', {
 	model_id: integer('model_id').notNull().references(modelId),
 	color: text('color').notNull(),
 	material_id: integer('material_id').notNull().references(penMaterialId),
-	trim_color_id: integer('trim_color_id').notNull().references(finishId),
+	// Nullable — real, confirmed case: some pens have no plated trim hardware
+	// at all (plain/unadorned body, just a nib), not a data-entry gap. Same
+	// reasoning as nibs.brand_id/finish_id below.
+	trim_color_id: integer('trim_color_id').references(finishId),
 	filling_system_id: integer('filling_system_id').notNull().references(fillingSystemId),
 	// Nullable — FPC's export tracks neither at all; import (Phase 1 step 6) leaves
 	// both unset rather than writing a guessed default, same pattern as
@@ -359,7 +370,7 @@ export const import_runs = sqliteTable('import_runs', {
 	report_summary: text('report_summary', { mode: 'json' }).$type<Record<string, unknown>>(),
 	run_at: integer('run_at', { mode: 'timestamp' })
 		.notNull()
-		.default(sql`(CURRENT_TIMESTAMP)`)
+		.default(sql`(unixepoch())`)
 });
 
 // --- Import working state: import_attempts + import_flagged_items ----------
@@ -378,7 +389,7 @@ export const import_attempts = sqliteTable('import_attempts', {
 	status: text('status', { enum: IMPORT_ATTEMPT_STATUSES }).notNull().default('open'),
 	created_at: integer('created_at', { mode: 'timestamp' })
 		.notNull()
-		.default(sql`(CURRENT_TIMESTAMP)`),
+		.default(sql`(unixepoch())`),
 	committed_at: integer('committed_at', { mode: 'timestamp' })
 });
 

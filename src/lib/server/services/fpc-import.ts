@@ -54,10 +54,13 @@ const CSV_OPTIONS = { delimiter: ';', columns: true, skip_empty_lines: true } as
 // see docs/adr/2026-07-10-unparseable-rows-are-correctable.md for the full
 // reasoning behind this exact set. Nib is deliberately excluded (blank is a
 // real, valid case — a pen body with no nib). Date Added is also excluded —
-// missing it falls back to the DB's own CURRENT_TIMESTAMP default rather
-// than blocking the row; losing the acquisition date is real but recoverable,
-// unlike losing what the pen even is.
-const PEN_REQUIRED_FIELDS = ['Brand', 'Model', 'Color', 'Material', 'Trim Color', 'Filling System'];
+// missing it falls back to the DB's own default (import time) rather than
+// blocking the row; losing the acquisition date is real but recoverable,
+// unlike losing what the pen even is. Trim Color is ALSO excluded — confirmed
+// real case (Ken, 2026-07-10): some pens have no plated trim hardware at all
+// (plain/unadorned body, just a nib), not a data-entry gap. trim_color_id is
+// nullable in the schema for the same reason.
+const PEN_REQUIRED_FIELDS = ['Brand', 'Model', 'Color', 'Material', 'Filling System'];
 
 function blankRequiredFields(raw: RawCsvRow, required: string[]): string[] {
 	return required.filter((key) => !raw[key] || raw[key].trim() === '');
@@ -82,7 +85,7 @@ type PenRowData = {
 	brand: ResolveResult;
 	model: ResolveResult | null; // null when brand isn't a settled id yet — resolved at commit
 	material: ResolveResult;
-	trimColor: ResolveResult;
+	trimColor: ResolveResult | null; // null when Trim Color is blank — real case, no trim hardware
 	fillingSystem: ResolveResult;
 	nib: ParsedNibText;
 	nibMaterial: ResolveResult | null;
@@ -161,7 +164,7 @@ function loadExistingPenKeys(db: Db): DuplicateCandidate[] {
 		.innerJoin(brands, eq(pens.brand_id, brands.id))
 		.innerJoin(models, eq(pens.model_id, models.id))
 		.innerJoin(pen_materials, eq(pens.material_id, pen_materials.id))
-		.innerJoin(finishes, eq(pens.trim_color_id, finishes.id))
+		.leftJoin(finishes, eq(pens.trim_color_id, finishes.id))
 		.all();
 
 	return rows.map((row) => ({
@@ -171,7 +174,7 @@ function loadExistingPenKeys(db: Db): DuplicateCandidate[] {
 			row.modelName,
 			row.color,
 			row.materialName,
-			row.trimColorName
+			row.trimColorName ?? ''
 		].join('|')
 	}));
 }
@@ -205,7 +208,7 @@ type PenFieldResolution = {
 	brand: ResolveResult;
 	model: ResolveResult | null;
 	material: ResolveResult;
-	trimColor: ResolveResult;
+	trimColor: ResolveResult | null;
 	fillingSystem: ResolveResult;
 	nib: ParsedNibText;
 	nibMaterial: ResolveResult | null;
@@ -216,7 +219,7 @@ type PenFieldResolution = {
 function resolvePenFields(db: Db, raw: RawCsvRow): PenFieldResolution {
 	const brand = resolveOrFlag(db, 'brand', raw.Brand);
 	const material = resolveOrFlag(db, 'pen_material', raw.Material);
-	const trimColor = resolveOrFlag(db, 'finish', raw['Trim Color']);
+	const trimColor = raw['Trim Color'] ? resolveOrFlag(db, 'finish', raw['Trim Color']) : null;
 	const fillingSystem = resolveOrFlag(db, 'filling_system', raw['Filling System']);
 	const model =
 		brand.outcome === 'resolved' ? resolveOrFlag(db, 'model', raw.Model, brand.id) : null;
@@ -251,7 +254,7 @@ function penFlaggableResolutions(
 		{ field: 'brand', result: resolution.brand },
 		...(resolution.model ? [{ field: 'model', result: resolution.model }] : []),
 		{ field: 'pen_material', result: resolution.material },
-		{ field: 'trim_color', result: resolution.trimColor },
+		...(resolution.trimColor ? [{ field: 'trim_color', result: resolution.trimColor }] : []),
 		{ field: 'filling_system', result: resolution.fillingSystem },
 		...(resolution.nibMaterial ? [{ field: 'nib_material', result: resolution.nibMaterial }] : []),
 		...(resolution.nibShape ? [{ field: 'nib_shape', result: resolution.nibShape }] : []),
@@ -699,15 +702,17 @@ function runCommitTransaction(
 					undefined,
 					pen_materials
 				);
-				const trimColorId = applyDecision(
-					tx,
-					item,
-					'trim_color',
-					'finish',
-					rowData.raw['Trim Color'],
-					undefined,
-					finishes
-				);
+				const trimColorId = rowData.raw['Trim Color']
+					? applyDecision(
+							tx,
+							item,
+							'trim_color',
+							'finish',
+							rowData.raw['Trim Color'],
+							undefined,
+							finishes
+						)
+					: null;
 				const fillingSystemId = applyDecision(
 					tx,
 					item,

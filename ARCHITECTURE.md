@@ -136,6 +136,12 @@ Ken-triggered because it involves real-data dedup judgment calls made in the mom
 already decided at commit time. A backup runs first only when there are pending migrations to
 apply. See [[docs/adr/2026-07-08-schema-migrations-authored-explicit-applied-automatic]].
 
+Every `integer(..., { mode: 'timestamp' })` column's default is `sql\`(unixepoch())\``, never
+`CURRENT_TIMESTAMP` — the latter returns SQLite's human-readable TEXT format, which silently
+becomes an Invalid Date under Drizzle's integer-timestamp mode. Found by a test that actually
+called `.getTime()` on a default-populated timestamp instead of just checking it wasn't null. See
+[[docs/adr/2026-07-10-timestamp-default-was-invalid-date]].
+
 ## Enum notation
 
 Schema docs use `enum(...)` for any constrained-value field, never `string (...)` — the latter

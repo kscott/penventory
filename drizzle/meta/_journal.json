@@ -36,6 +36,20 @@
       "when": 1783717704093,
       "tag": "0004_minor_dazzler",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1783718869645,
+      "tag": "0005_faulty_magneto",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1783719247353,
+      "tag": "0006_furry_sinister_six",
+      "breakpoints": true
     }
   ]
 }

@@ -20,11 +20,15 @@ have every chance to correct it and get an import done."
 
 **Decision:**
 New `unparseable_row` flag type. For pens, a row is `unparseable_row` when any of **Brand, Model,
-Color, Material, Trim Color, Filling System** is blank — the exact set of fields that map to a
-`NOT NULL` schema column with no safe default. `Nib` is excluded (blank is a real, valid case — a
-pen body with no nib). `Date Added` is also excluded: missing it falls back to the DB's own
-`CURRENT_TIMESTAMP` default rather than blocking the row — losing the acquisition date is real
-but recoverable, unlike losing what the pen even is. A row failing this check writes a minimal
+Color, Material, Filling System** is blank — the fields that map to a `NOT NULL` schema column
+with no safe default. `Nib` is excluded (blank is a real, valid case — a pen body with no nib).
+`Date Added` is also excluded: missing it falls back to the DB's own default (import time) rather
+than blocking the row — losing the acquisition date is real but recoverable, unlike losing what
+the pen even is. **`Trim Color` was originally in this set and was removed same-day**: Ken
+confirmed a real case checking the actual export — "there are pens that have no trim - just a
+nib" (unadorned/plain body, no plated hardware at all) — this isn't corrupt data, so
+`trim_color_id` became nullable (same migration pass) instead of being required. A row failing
+this (corrected) check writes a minimal
 `UnparseableRowData` (raw CSV + which fields were missing) with no resolution attempted at all —
 avoids wasted `resolveOrFlag` work on data that can't become a valid entry regardless.
 
