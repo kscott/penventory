@@ -1220,6 +1220,76 @@ describe('fpc-import (parse + commit)', () => {
 			expect(db.select().from(pen_materials).all()).toHaveLength(1);
 		});
 
+		it('three independently-flagged fields on one row (Brand, Material, Trim Color all typoed) all resolve correctly in a single commit, decided in a different order than parse encountered them', async () => {
+			const existingBrand = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
+			const existingMaterial = db
+				.insert(pen_materials)
+				.values({ name: 'Acrylic' })
+				.returning()
+				.get();
+			const existingFinish = db.insert(finishes).values({ name: 'Rhodium' }).returning().get();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'three-field-typo'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			const candidateInfo = item.candidate_info as { fields: Record<string, unknown> };
+			expect(Object.keys(candidateInfo.fields).sort()).toEqual([
+				'brand',
+				'pen_material',
+				'trim_color'
+			]);
+
+			// Decided out of parse order (trim_color, then brand, then
+			// material) — field_decisions is a map, not a queue, so order of
+			// decision shouldn't matter to the outcome.
+			decideField(item.id, 'trim_color', 'merge_into', existingFinish.id);
+			decideField(item.id, 'brand', 'merge_into', existingBrand.id);
+			decideField(item.id, 'pen_material', 'merge_into', existingMaterial.id);
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(1);
+
+			const pen = db.select().from(pens).all()[0];
+			expect(pen.brand_id).toBe(existingBrand.id);
+			expect(pen.material_id).toBe(existingMaterial.id);
+			expect(pen.trim_color_id).toBe(existingFinish.id);
+			expect(db.select().from(brands).all()).toHaveLength(1);
+			expect(db.select().from(pen_materials).all()).toHaveLength(1);
+			expect(db.select().from(finishes).all()).toHaveLength(1);
+		});
+
+		it('three independently-flagged fields with only two decided still refuses — per-field completeness holds at 3+ fields, not just 2', async () => {
+			const existingBrand = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
+			const existingMaterial = db
+				.insert(pen_materials)
+				.values({ name: 'Acrylic' })
+				.returning()
+				.get();
+			db.insert(finishes).values({ name: 'Rhodium' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'three-field-typo'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			decideField(item.id, 'brand', 'merge_into', existingBrand.id);
+			decideField(item.id, 'pen_material', 'merge_into', existingMaterial.id);
+			// trim_color deliberately left undecided.
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+			expect(db.select().from(pens).all()).toEqual([]);
+
+			// Deciding the third field is what actually unblocks it.
+			const existingFinish = db.select().from(finishes).all()[0];
+			decideField(item.id, 'trim_color', 'merge_into', existingFinish.id);
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(1);
+		});
+
 		it('a needs_confirmation row that was never decided at all (field_decisions never touched) refuses to commit', async () => {
 			db.insert(brands).values({ name: 'Wavecrest' }).run();
 			const { attemptId } = parseCatalogImport(db, {
@@ -1564,6 +1634,69 @@ describe('fpc-import (parse + commit)', () => {
 			const pen = db.select().from(pens).all()[0];
 			expect(pen.model_id).toBe(fernhollowModel.id);
 			expect(db.select().from(models).all()).toHaveLength(2);
+		});
+
+		// The pen-side counterpart to "resolves a line at commit time when its
+		// brand was itself new at parse" (ink side, above) — model resolution
+		// defers exactly the same way when brand.outcome === 'new', not just
+		// when it's 'flagged' (the only variant the tests above this one
+		// exercised). No brand seeded here at all.
+		it('resolves a model at commit time when its brand was itself new at parse — not just when the brand was flagged', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'model-at-commit-when-brand-new'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			decideAllClean(attemptId, 'import');
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const pen = db.select().from(pens).all()[0];
+			const brand = db.select().from(brands).all()[0];
+			const model = db.select().from(models).all()[0];
+			expect(brand.name).toBe('Hollowreed');
+			expect(model).toMatchObject({ brand_id: brand.id, name: 'Meridian' });
+			expect(pen.model_id).toBe(model.id);
+		});
+
+		it('two rows sharing the same new brand AND the same new model create exactly one of each, both pens referencing them — not two competing model rows', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'two-rows-same-new-brand-same-model'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			decideAllClean(attemptId, 'import');
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(2);
+
+			const allBrands = db.select().from(brands).all();
+			const allModels = db.select().from(models).all();
+			expect(allBrands).toHaveLength(1);
+			expect(allModels).toHaveLength(1);
+			expect(allModels[0].brand_id).toBe(allBrands[0].id);
+			const allPens = db.select().from(pens).all();
+			expect(allPens.every((p) => p.model_id === allModels[0].id)).toBe(true);
+		});
+
+		it('a deferred model resolution (brand new at parse) still respects brand scoping — a same-named model under an unrelated existing brand is never a false-positive match', async () => {
+			const thistlebrook = db.insert(brands).values({ name: 'Thistlebrook' }).returning().get();
+			db.insert(models).values({ brand_id: thistlebrook.id, name: 'Journeyman' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'model-cross-brand-scoping-brand-deferred'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			decideAllClean(attemptId, 'import');
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const newBrand = db.select().from(brands).where(eq(brands.name, 'Hollowreed')).get()!;
+			const allModels = db.select().from(models).all();
+			expect(allModels).toHaveLength(2);
+			const newModel = allModels.find((m) => m.brand_id === newBrand.id)!;
+			expect(newModel).toBeDefined();
+			expect(newModel.name).toBe('Journeyman');
+			const pen = db.select().from(pens).all()[0];
+			expect(pen.model_id).toBe(newModel.id);
 		});
 	});
 });
