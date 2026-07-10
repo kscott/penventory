@@ -175,12 +175,18 @@ function identityPiece(result: ResolveResult, rawName: string): string | null {
 function penIdentityGroupKey(raw: RawCsvRow, resolution: PenFieldResolution): string | null {
 	const brand = identityPiece(resolution.brand, raw.Brand);
 	if (brand === null) return null;
+	// resolution.model is null exactly when brand isn't 'resolved' (see
+	// resolvePenFields — model resolution needs a real brandId to query the
+	// brand-scoped models table). Since `brand` above is already non-null,
+	// resolveOrFlag's 'flagged' outcome has already been filtered out by the
+	// guard above — resolveOrFlag has exactly three outcomes, so the only one
+	// left is 'new'. There's no third case to handle here: a brand-new
+	// brand's model was never even looked up, so the raw, normalized Model
+	// text is the safe identity marker (see the module comment above).
 	const model = resolution.model
 		? identityPiece(resolution.model, raw.Model)
-		: resolution.brand.outcome === 'new'
-			? `new:${raw.Model.trim().toLowerCase()}`
-			: null;
-	if (model === null) return null;
+		: `new:${raw.Model.trim().toLowerCase()}`;
+	if (model === null) return null; // Model itself is ambiguous — resolveOrFlag flagged it
 	const material = identityPiece(resolution.material, raw.Material);
 	if (material === null) return null;
 	const trim = resolution.trimColor
@@ -193,10 +199,10 @@ function penIdentityGroupKey(raw: RawCsvRow, resolution: PenFieldResolution): st
 // Type is a small fixed enum (INK_TYPES) validated directly, never resolved
 // through resolveOrFlag — safe to include in the group key as plain
 // normalized text, no identityPiece needed. Line mirrors penIdentityGroupKey's
-// Model handling: `line` stays null whenever brand isn't 'resolved' yet
-// (line resolution needs a real brandId), including when brand is 'new' —
-// the raw, normalized Line text is a safe fallback identity marker for that
-// case, same reasoning as Model's.
+// Model handling, including the same "only 'new' is possible here" reasoning
+// — `line` stays null whenever brand isn't 'resolved' yet (line resolution
+// needs a real brandId), and brandPiece being non-null above already rules
+// out 'flagged'.
 function inkIdentityGroupKey(
 	raw: RawCsvRow,
 	brand: ResolveResult,
@@ -208,10 +214,8 @@ function inkIdentityGroupKey(
 		? 'none'
 		: line
 			? identityPiece(line, raw.Line)
-			: brand.outcome === 'new'
-				? `new:${raw.Line.trim().toLowerCase()}`
-				: null;
-	if (linePiece === null) return null;
+			: `new:${raw.Line.trim().toLowerCase()}`;
+	if (linePiece === null) return null; // Line itself is ambiguous — resolveOrFlag flagged it
 	return [brandPiece, linePiece, raw.Type].join('|');
 }
 

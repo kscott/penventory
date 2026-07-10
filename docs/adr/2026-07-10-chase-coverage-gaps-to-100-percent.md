@@ -46,3 +46,20 @@ accepted because the aggregate percentage already cleared the gate.
 - Applies retroactively whenever a session works in a file with less-than-100% coverage: don't
   just add the one test needed for the change at hand, look at what else in that file's report is
   uncovered and ask why.
+
+**Addendum, 2026-07-10 (identity-key redesign):** Ken asked directly why the terminal summary
+showed only one uncovered *line* while Statements/Branches were both meaningfully below 100% —
+the terminal's "Uncovered Line #s" column only lists lines with *zero* execution; a line where one
+arm of an `if`/ternary/`&&` fires but the other never does still counts as "line covered," so
+partial-branch gaps hide behind it entirely. Regenerating the HTML report (`reporter: ['text',
+'html']`, already configured) and grepping for `cbranch-no`/`missing-if-branch` surfaced the exact
+locations. Of 7 branch gaps found this way: 5 were genuine missing tests (closed — see
+[[docs/adr/2026-07-10-identity-key-is-resolved-not-raw-text]]'s test additions), but **2 were
+actually structurally unreachable dead code introduced by the redesign itself** — a three-way
+ternary (`resolution.model ? … : outcome === 'new' ? … : null`) where the final `: null` arm could
+never execute, because the function's own guard clause immediately above had already ruled out
+every outcome except `'new'`. Simplified to a two-way ternary instead of writing a test for an
+impossible case or leaving it as unexplained dead code. The lesson generalizes: when a coverage gap
+resists every attempt to write a reaching test, check whether the branch is actually reachable
+before concluding the test is just hard to write — TypeScript's type system doesn't track outcome
+invariants across a guard clause and a later computation, so it can't catch this itself.

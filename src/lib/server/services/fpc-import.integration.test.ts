@@ -539,6 +539,166 @@ describe('fpc-import (parse + commit)', () => {
 			expect(Object.keys(candidateInfo.fields).sort()).toEqual(['brand', 'pen_material']);
 		});
 
+		it('does not attempt duplicate detection when Material specifically is ambiguous, even though Brand and Model both resolve cleanly', () => {
+			// Coverage-gap finding, 2026-07-10: the earlier "flags two
+			// independent fields" test only ever exercised Brand being the
+			// field that blocks identity computation — penIdentityGroupKey's
+			// `if (material === null) return null` guard (a genuinely
+			// distinct code path from the brand/model checks above it) had
+			// never actually been hit by any test, hiding behind an
+			// aggregate coverage percentage that still cleared 90%. Brand
+			// ("Fernhollow") is seeded and resolves exactly; Material
+			// ("Acrylic") fuzzy-matches a seeded near-miss ("Acrilic") and is
+			// the ONLY thing blocking this row's identity from being known.
+			db.insert(brands).values({ name: 'Fernhollow' }).run();
+			db.insert(pen_materials).values({ name: 'Acrilic' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'material-drift-brand-resolved'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('needs_confirmation');
+			const candidateInfo = items[0].candidate_info as { fields: Record<string, unknown> };
+			expect(Object.keys(candidateInfo.fields)).toEqual(['pen_material']);
+		});
+
+		it('does not attempt duplicate detection when Model specifically is ambiguous under an already-resolved brand', () => {
+			// penIdentityGroupKey's `if (model === null) return null` is only
+			// reachable via identityPiece(resolution.model, ...) itself
+			// returning null — i.e. Model fuzzy-matches an existing model
+			// *under the same, already-resolved brand* ("Wavecrest" seeded
+			// exactly; "Vantag" flags against a seeded "Vantage" model).
+			const brand = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
+			db.insert(models).values({ brand_id: brand.id, name: 'Vantage' }).run();
+			db.insert(pen_materials).values({ name: 'Acrylic' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'model-drift-brand-resolved'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('needs_confirmation');
+			const candidateInfo = items[0].candidate_info as { fields: Record<string, unknown> };
+			expect(Object.keys(candidateInfo.fields)).toEqual(['model']);
+		});
+
+		it('does not attempt ink duplicate detection when Line specifically is ambiguous under an already-resolved brand', () => {
+			// inkIdentityGroupKey's ink-side counterpart: `if (linePiece ===
+			// null) return null` is only reachable via identityPiece(line,
+			// ...) itself returning null — Line fuzzy-matches an existing
+			// line under the same, already-resolved brand.
+			const brand = db.insert(brands).values({ name: 'Thistlebrook' }).returning().get();
+			db.insert(lines).values({ brand_id: brand.id, name: 'Woodland' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'line-drift-brand-resolved')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('needs_confirmation');
+			const candidateInfo = items[0].candidate_info as { fields: Record<string, unknown> };
+			expect(Object.keys(candidateInfo.fields)).toEqual(['line']);
+		});
+
+		it('matches a possible_duplicate against an existing pen that has no trim hardware at all (trim_color_id null)', () => {
+			// Coverage-gap finding: loadExistingPenIdentities's `row.trim_color_id
+			// !== null ? ... : 'none'` branch had never been exercised with an
+			// actual null — every existing-pen duplicate-detection test so far
+			// seeded a pen with real trim hardware.
+			const brand = db.insert(brands).values({ name: 'Fernhollow' }).returning().get();
+			const model = db
+				.insert(models)
+				.values({ brand_id: brand.id, name: 'Rambler' })
+				.returning()
+				.get();
+			const material = db.insert(pen_materials).values({ name: 'Celluloid' }).returning().get();
+			const fillingSystem = db
+				.insert(filling_systems)
+				.values({ name: 'Eyedropper' })
+				.returning()
+				.get();
+			db.insert(pens)
+				.values({
+					brand_id: brand.id,
+					model_id: model.id,
+					color: 'Moss',
+					material_id: material.id,
+					trim_color_id: null,
+					filling_system_id: fillingSystem.id,
+					ownership_state: 'active'
+				})
+				.run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'blank-trim-color'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('possible_duplicate');
+			const candidateInfo = items[0].candidate_info as { matches: { matchType: string }[] };
+			expect(candidateInfo.matches[0].matchType).toBe('existing');
+		});
+
+		it('matches a possible_duplicate against an existing ink that has no Line at all (line_id null)', () => {
+			// Coverage-gap finding: loadExistingInkIdentities's equivalent
+			// `row.line_id !== null ? ... : 'none'` branch, same reasoning.
+			const brand = db.insert(brands).values({ name: 'Quietbrook' }).returning().get();
+			db.insert(inks)
+				.values({
+					brand_id: brand.id,
+					line_id: null,
+					name: 'Harbor Fog',
+					type: 'bottle',
+					color_fpc: '#5a6b73',
+					ownership_state: 'active'
+				})
+				.run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'blank-line')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('possible_duplicate');
+			const candidateInfo = items[0].candidate_info as { matches: { matchType: string }[] };
+			expect(candidateInfo.matches[0].matchType).toBe('existing');
+		});
+
+		it("matches a possible_duplicate against an existing ink that DOES have a Line — the other half of loadExistingInkIdentities' null-vs-real line_id branch", () => {
+			const brand = db.insert(brands).values({ name: 'Thistlebrook' }).returning().get();
+			const line = db
+				.insert(lines)
+				.values({ brand_id: brand.id, name: 'Woodland' })
+				.returning()
+				.get();
+			db.insert(inks)
+				.values({
+					brand_id: brand.id,
+					line_id: line.id,
+					name: 'Canopy Green',
+					type: 'bottle',
+					color_fpc: '#3d5c3a',
+					ownership_state: 'active'
+				})
+				.run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'with-line')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('possible_duplicate');
+			const candidateInfo = items[0].candidate_info as { matches: { matchType: string }[] };
+			expect(candidateInfo.matches[0].matchType).toBe('existing');
+		});
+
 		it('tracks the source CSV line number on every row, 1-indexed including the header', () => {
 			const { attemptId } = parseCatalogImport(db, {
 				pensCSV: fixture('pens', 'exact-duplicate'),
