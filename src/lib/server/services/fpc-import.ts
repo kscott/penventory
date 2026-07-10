@@ -2,12 +2,10 @@ import type Database from 'better-sqlite3';
 import { parse } from 'csv-parse/sync';
 import { eq } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import type { AnySQLiteTable, SQLiteColumn } from 'drizzle-orm/sqlite-core';
 import { backupDatabase } from '../backup';
 import { create } from '../db/repository';
 import { resolveOrFlag, type ResolveResult } from '../db/resolve-or-flag';
 import {
-	aliases,
 	brands,
 	filling_systems,
 	finishes,
@@ -26,10 +24,10 @@ import {
 	pen_materials,
 	pen_nibs,
 	pens,
-	type AliasableType,
 	type ImportFlagType
 } from '../db/schema';
 import type * as schema from '../db/schema';
+import { applyDecision, CommitRefusedError, settleField } from './decision-resolution';
 import {
 	findDuplicateMatches,
 	type DuplicateCandidate,
@@ -37,9 +35,10 @@ import {
 } from './duplicate-detection';
 import { parseNibText, type ParsedNibText } from './nib-parser';
 
+export { CommitRefusedError };
+
 type Db = BetterSQLite3Database<typeof schema>;
 type RawCsvRow = Record<string, string>;
-type TableWithId = AnySQLiteTable & { id: SQLiteColumn };
 type FlaggedItemRow = typeof import_flagged_items.$inferSelect;
 
 const CSV_OPTIONS = { delimiter: ';', columns: true, skip_empty_lines: true } as const;
@@ -336,8 +335,10 @@ export function parseCatalogImport(
 }
 
 // --- Commit --------------------------------------------------------------
-
-export class CommitRefusedError extends Error {}
+// settleField/applyDecision/CommitRefusedError live in decision-resolution.ts
+// — extracted so their full decision-permutation matrix (merge_into/
+// alias_to/import, decided-field vs not, contains vs fuzzy-only) can be
+// tested directly and exhaustively, independent of the full CSV pipeline.
 
 export type CommitResult = {
 	committed: true;
@@ -345,80 +346,6 @@ export type CommitResult = {
 	inksCreated: number;
 	nibsCreated: number;
 };
-
-function createControlledListRow<T extends TableWithId>(
-	db: Db,
-	rawName: string,
-	scopeId: number | undefined,
-	table: T
-): number {
-	const values = (
-		scopeId !== undefined ? { name: rawName, brand_id: scopeId } : { name: rawName }
-	) as T['$inferInsert'];
-	const created = create(db, table, values) as unknown as { id: number };
-	return created.id;
-}
-
-// Resolves (and, if genuinely new, creates) a controlled-list entity — safe
-// to call sequentially row by row within the same connection, since a 'new'
-// entity created for an earlier row is immediately visible (read-your-own-
-// writes) to resolveOrFlag calls made for later rows referencing the same
-// name, so two rows introducing the same brand-new entity never create two.
-// Throws if resolveOrFlag still comes back 'flagged' here — that can only
-// happen for a field that was ambiguous but wasn't the one Ken's decision on
-// this row actually addressed (see applyDecision below); refusing beats
-// silently picking a near-duplicate.
-function settleField<T extends TableWithId>(
-	db: Db,
-	type: AliasableType,
-	rawName: string,
-	scopeId: number | undefined,
-	table: T
-): number {
-	const result = resolveOrFlag(db, type, rawName, scopeId);
-	if (result.outcome === 'resolved') return result.id;
-	if (result.outcome === 'flagged') {
-		throw new CommitRefusedError(
-			`"${rawName}" (${type}) is still ambiguous and wasn't the field this row's decision addressed`
-		);
-	}
-	return createControlledListRow(db, rawName, scopeId, table);
-}
-
-// A field that was flagged during parse gets its outcome from Ken's decision
-// instead of resolving fresh — but decision/decision_target_id on a flagged
-// item is single-valued, and a row can (rarely) have more than one ambiguous
-// field (see determineFlag's comment). Only the field recorded as
-// candidate_info.decidedField gets the special treatment; every other field
-// on the row settles normally.
-function applyDecision<T extends TableWithId>(
-	db: Db,
-	item: FlaggedItemRow,
-	field: string,
-	type: AliasableType,
-	rawName: string,
-	scopeId: number | undefined,
-	table: T
-): number {
-	const candidateInfo = item.candidate_info as { decidedField?: string } | null;
-	const isDecidedField = candidateInfo?.decidedField === field;
-	if (isDecidedField && item.decision === 'merge_into' && item.decision_target_id) {
-		return item.decision_target_id;
-	}
-	if (isDecidedField && item.decision === 'alias_to' && item.decision_target_id) {
-		db.insert(aliases)
-			.values({ alias: rawName, aliasable_type: type, aliasable_id: item.decision_target_id })
-			.run();
-		return item.decision_target_id;
-	}
-	if (isDecidedField && item.decision === 'import') {
-		// Ken's explicit call: create as new despite the fuzzy-match warning
-		// — resolveOrFlag would flag it again if asked fresh, so this bypasses
-		// it rather than settleField, which would just re-throw.
-		return createControlledListRow(db, rawName, scopeId, table);
-	}
-	return settleField(db, type, rawName, scopeId, table);
-}
 
 export async function commitImportAttempt(
 	db: Db,

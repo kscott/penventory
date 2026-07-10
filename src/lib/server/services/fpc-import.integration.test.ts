@@ -123,7 +123,7 @@ describe('fpc-import (parse + commit)', () => {
 			expect(items[1].flag_type).toBe('possible_duplicate');
 		});
 
-		it('flags brand drift against an already-committed catalog brand', () => {
+		it('flags brand drift against an already-committed catalog brand (character-typo signal)', () => {
 			db.insert(brands).values({ name: 'Wavecrest' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
@@ -135,6 +135,43 @@ describe('fpc-import (parse + commit)', () => {
 			expect(items[0].flag_type).toBe('needs_confirmation');
 			const candidateInfo = items[0].candidate_info as { fields: Record<string, unknown> };
 			expect(candidateInfo.fields.brand).toBeDefined();
+		});
+
+		it('flags a compound/legal-name brand variant against an existing brand — the "Pilot" vs "Pilot Namiki" shape, word-containment not character typo', () => {
+			db.insert(brands).values({ name: 'Larkspur' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'brand-compound-name-drift'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('needs_confirmation');
+			const candidateInfo = items[0].candidate_info as {
+				fields: { brand?: { candidates: { reasons: string[] }[] } };
+			};
+			const candidates = candidateInfo.fields.brand?.candidates ?? [];
+			expect(candidates.length).toBeGreaterThan(0);
+			// Isolates the word-containment signal from the character-typo one:
+			// "Larkspur Pen Company" is nothing like "Larkspur" edit-distance-
+			// wise, but every word of the shorter name appears in the longer.
+			expect(candidates[0].reasons).toEqual(['contains']);
+		});
+
+		it('resolves a zero-overlap alias name automatically — the "Namiki" -> "Pilot" shape, no shared words at all', () => {
+			const brand = db.insert(brands).values({ name: 'Larkspur' }).returning().get();
+			db.insert(aliases)
+				.values({ alias: 'Corvid', aliasable_type: 'brand', aliasable_id: brand.id })
+				.run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'brand-alias-zero-overlap'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBeNull();
+			expect(items[0].decision).toBe('import');
 		});
 
 		it('resolves a known alias automatically, no flag', () => {
@@ -377,6 +414,98 @@ describe('fpc-import (parse + commit)', () => {
 			expect(db.select().from(brands).all()).toHaveLength(1);
 		});
 
+		it('a compound-name brand flag ("Pilot Namiki" shape) resolves end-to-end via merge_into, no duplicate brand created', async () => {
+			const existingBrand = db.insert(brands).values({ name: 'Larkspur' }).returning().get();
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'brand-compound-name-drift'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const item = flaggedItemsFor(attemptId)[0];
+			db.update(import_flagged_items)
+				.set({
+					decision: 'merge_into',
+					decision_target_id: existingBrand.id,
+					decided_at: new Date()
+				})
+				.where(eq(import_flagged_items.id, item.id))
+				.run();
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const pen = db.select().from(pens).all()[0];
+			expect(pen.brand_id).toBe(existingBrand.id);
+			expect(db.select().from(brands).all()).toHaveLength(1);
+		});
+
+		it('a compound-name brand flag ("Pilot Namiki" shape) resolves end-to-end via alias_to, recording the alias and no duplicate', async () => {
+			const existingBrand = db.insert(brands).values({ name: 'Larkspur' }).returning().get();
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'brand-compound-name-drift'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const item = flaggedItemsFor(attemptId)[0];
+			db.update(import_flagged_items)
+				.set({
+					decision: 'alias_to',
+					decision_target_id: existingBrand.id,
+					decided_at: new Date()
+				})
+				.where(eq(import_flagged_items.id, item.id))
+				.run();
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const pen = db.select().from(pens).all()[0];
+			expect(pen.brand_id).toBe(existingBrand.id);
+			expect(db.select().from(brands).all()).toHaveLength(1);
+			const alias = db.select().from(aliases).all()[0];
+			expect(alias).toMatchObject({
+				alias: 'Larkspur Pen Company',
+				aliasable_type: 'brand',
+				aliasable_id: existingBrand.id
+			});
+		});
+
+		it('a compound-name brand flag ("Pilot Namiki" shape) resolved via import is REFUSED — word-containment can never create a separate brand', async () => {
+			db.insert(brands).values({ name: 'Larkspur' }).run();
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'brand-compound-name-drift'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const item = flaggedItemsFor(attemptId)[0];
+			db.update(import_flagged_items)
+				.set({ decision: 'import', decided_at: new Date() })
+				.where(eq(import_flagged_items.id, item.id))
+				.run();
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+
+			// Refused before anything was written — no pen, no second brand.
+			expect(db.select().from(pens).all()).toEqual([]);
+			expect(db.select().from(brands).all()).toHaveLength(1);
+		});
+
+		it('by contrast, a character-typo-only brand flag ("Wavecrest"/"Wavecrst" shape) resolved via import IS allowed — creates a genuinely separate brand', async () => {
+			db.insert(brands).values({ name: 'Wavecrest' }).run();
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'brand-drift'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			decideAllClean(attemptId, 'import');
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const allBrands = db.select().from(brands).all();
+			expect(allBrands).toHaveLength(2);
+			const pen = db.select().from(pens).all()[0];
+			expect(allBrands.find((b) => b.id === pen.brand_id)?.name).toBe('Wavecrst');
+		});
+
 		it('a needs_confirmation flag on brand can be resolved via alias_to, recording the alias for next time', async () => {
 			const existingBrand = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
 			const { attemptId } = parseCatalogImport(db, {
@@ -398,19 +527,6 @@ describe('fpc-import (parse + commit)', () => {
 				aliasable_type: 'brand',
 				aliasable_id: existingBrand.id
 			});
-		});
-
-		it('a needs_confirmation flag on brand can be resolved via import, creating a genuinely new brand', async () => {
-			db.insert(brands).values({ name: 'Wavecrest' }).run();
-			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'brand-drift'),
-				inksCSV: fixture('inks', 'empty')
-			});
-			decideAllClean(attemptId, 'import');
-
-			await commitImportAttempt(db, sqlite, attemptId, backupDir);
-
-			expect(db.select().from(brands).all()).toHaveLength(2);
 		});
 
 		it('flags a new model/line ambiguity discovered only once brand context is known, and refuses to commit', async () => {
