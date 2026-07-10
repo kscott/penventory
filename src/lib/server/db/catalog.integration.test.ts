@@ -113,6 +113,25 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 			expect(pen.id).toBeTypeOf('number');
 		});
 
+		it('accepts null size_category and condition — FPC import (step 6) has no source column for either', () => {
+			const f = seedControlledLists();
+			const pen = db
+				.insert(pens)
+				.values({
+					brand_id: f.brand.id,
+					model_id: f.model.id,
+					color: 'Primary Manipulation 5.5',
+					material_id: f.penMaterial.id,
+					trim_color_id: f.finish.id,
+					filling_system_id: f.fillingSystem.id,
+					ownership_state: 'active'
+				})
+				.returning()
+				.get();
+			expect(pen.size_category).toBeNull();
+			expect(pen.condition).toBeNull();
+		});
+
 		it.each(['brand_id', 'model_id', 'material_id', 'trim_color_id', 'filling_system_id'] as const)(
 			'enforces the %s foreign key',
 			(column) => {
@@ -145,6 +164,22 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 			const f = seedControlledLists();
 			const ink = db.insert(inks).values(validValues(f)).returning().get();
 			expect(ink.maker_id).toBeNull();
+		});
+
+		it('accepts a null line_id — real, confirmed case: FPC leaves Line blank for most inks', () => {
+			const f = seedControlledLists();
+			const ink = db
+				.insert(inks)
+				.values({
+					brand_id: f.brand.id,
+					name: 'Kon-peki',
+					type: 'bottle',
+					color_fpc: '#123456',
+					ownership_state: 'active'
+				})
+				.returning()
+				.get();
+			expect(ink.line_id).toBeNull();
 		});
 
 		it('resolves maker_id when set — reuses brands directly, not a separate table', () => {

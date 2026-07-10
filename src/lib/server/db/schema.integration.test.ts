@@ -62,6 +62,8 @@ describe('controlled-list schema', () => {
 				'brands',
 				'filling_systems',
 				'finishes',
+				'import_attempts',
+				'import_flagged_items',
 				'import_runs',
 				'inks',
 				'lines',

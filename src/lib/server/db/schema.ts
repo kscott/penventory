@@ -197,8 +197,11 @@ export const pens = sqliteTable('pens', {
 	material_id: integer('material_id').notNull().references(penMaterialId),
 	trim_color_id: integer('trim_color_id').notNull().references(finishId),
 	filling_system_id: integer('filling_system_id').notNull().references(fillingSystemId),
-	size_category: text('size_category', { enum: SIZE_CATEGORIES }).notNull(),
-	condition: text('condition', { enum: CONDITIONS }).notNull(),
+	// Nullable — FPC's export tracks neither at all; import (Phase 1 step 6) leaves
+	// both unset rather than writing a guessed default, same pattern as
+	// nibs.brand_id below. Filled in later by hand via Phase 3's edit UI.
+	size_category: text('size_category', { enum: SIZE_CATEGORIES }),
+	condition: text('condition', { enum: CONDITIONS }),
 	accessories_note: text('accessories_note'),
 	notes: text('notes'),
 	ownership_state: text('ownership_state', { enum: OWNERSHIP_STATES }).notNull(),
@@ -294,7 +297,9 @@ export const pen_nibs = sqliteTable('pen_nibs', {
 export const inks = sqliteTable('inks', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	brand_id: integer('brand_id').notNull().references(brandId),
-	line_id: integer('line_id').notNull().references(lineId),
+	// Nullable — real, confirmed case (FPC's export leaves Line blank for most
+	// inks): not every ink has a sub-line. Same reasoning as maker_id below.
+	line_id: integer('line_id').references(lineId),
 	maker_id: integer('maker_id').references(brandId),
 	name: text('name').notNull(),
 	type: text('type', { enum: INK_TYPES }).notNull(),
@@ -355,4 +360,67 @@ export const import_runs = sqliteTable('import_runs', {
 	run_at: integer('run_at', { mode: 'timestamp' })
 		.notNull()
 		.default(sql`(CURRENT_TIMESTAMP)`)
+});
+
+// --- Import working state: import_attempts + import_flagged_items ----------
+// Never a report file — see docs/adr/2026-07-09-no-cli-at-all-for-import.md.
+// Parsing (phase1-plan.md step 6) writes one import_attempts row and one
+// import_flagged_items row per item needing a human decision; Phase 1.1's UI
+// is the only thing that ever sets `decision`; commit refuses if any flagged
+// item under the attempt still has decision = null.
+
+export const IMPORT_ATTEMPT_STATUSES = ['open', 'committed'] as const;
+export type ImportAttemptStatus = (typeof IMPORT_ATTEMPT_STATUSES)[number];
+
+export const import_attempts = sqliteTable('import_attempts', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	operation_type: text('operation_type', { enum: IMPORT_OPERATION_TYPES }).notNull(),
+	status: text('status', { enum: IMPORT_ATTEMPT_STATUSES }).notNull().default('open'),
+	created_at: integer('created_at', { mode: 'timestamp' })
+		.notNull()
+		.default(sql`(CURRENT_TIMESTAMP)`),
+	committed_at: integer('committed_at', { mode: 'timestamp' })
+});
+
+export const importAttemptId = () => import_attempts.id;
+
+// One generic `needs_confirmation` value rather than a needs_confirmation_*
+// value per resolveOrFlag type (brand/line/model/pen_material/nib_material/
+// finish/filling_system/nib_shape/vendor — nine today, more as new aliasable
+// types get added). The specific field lives in candidate_info instead
+// (`{ field: 'nib_material', ... }`), so the enum doesn't have to grow with
+// it. unmatched_color_refresh is added by step 8's own migration, not here.
+export const IMPORT_FLAG_TYPES = [
+	'needs_confirmation',
+	'possible_duplicate',
+	'unparseable_nib'
+] as const;
+export type ImportFlagType = (typeof IMPORT_FLAG_TYPES)[number];
+
+export const IMPORT_DECISIONS = ['import', 'skip', 'merge_into', 'alias_to'] as const;
+export type ImportDecision = (typeof IMPORT_DECISIONS)[number];
+
+// Holds one row per parsed CSV row, not only flagged ones — the only way
+// commit can know what to write for a clean row too, given the "no file,
+// ever" rule (the source CSV text isn't persisted anywhere once parse
+// returns; parse and commit are separate calls, potentially separate HTTP
+// requests in Phase 1.1). flag_type is null for a clean row that needed no
+// human decision — parse sets decision = 'import' on those immediately, so
+// "commit refuses if any decision is null" still means exactly what the ADR
+// says: a row only blocks commit while something about it is genuinely
+// undecided. row_data always carries { entityType: 'pen' | 'ink', ... } —
+// entityType lives in the JSON rather than its own column, since nothing
+// else needs to query on it.
+export const import_flagged_items = sqliteTable('import_flagged_items', {
+	id: integer('id').primaryKey({ autoIncrement: true }),
+	import_attempt_id: integer('import_attempt_id').notNull().references(importAttemptId),
+	row_data: text('row_data', { mode: 'json' }).notNull().$type<Record<string, unknown>>(),
+	flag_type: text('flag_type', { enum: IMPORT_FLAG_TYPES }),
+	// Match candidate(s) — id/name/similarity for possible_duplicate, the
+	// specific field name plus resolveOrFlag's candidates for
+	// needs_confirmation. Null for unparseable_nib and for clean rows.
+	candidate_info: text('candidate_info', { mode: 'json' }).$type<Record<string, unknown>>(),
+	decision: text('decision', { enum: IMPORT_DECISIONS }),
+	decision_target_id: integer('decision_target_id'),
+	decided_at: integer('decided_at', { mode: 'timestamp' })
 });
