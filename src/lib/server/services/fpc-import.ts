@@ -391,7 +391,11 @@ export function parseCatalogImport(
 
 		const compositeKey = penCompositeKey(raw);
 		const dupMatches = findDuplicateMatches(compositeKey, existingPenKeys, batchPenKeys);
-		batchPenKeys.push({ id: index, compositeKey });
+		// sourceLine, not the raw batch array index — a matchType:'batch'
+		// candidate's `id` needs to mean something a reviewer can act on (line
+		// 6 of the CSV), not an internal position that has no meaning outside
+		// this function. See docs/adr/2026-07-10-identity-matching-audit.md.
+		batchPenKeys.push({ id: sourceLine, compositeKey });
 
 		const resolution = resolvePenFields(db, raw);
 		const rowData = buildPenRowData(raw, sourceLine, resolution);
@@ -405,7 +409,7 @@ export function parseCatalogImport(
 		const sourceLine = index + 2;
 		const compositeKey = inkCompositeKey(raw);
 		const dupMatches = findDuplicateMatches(compositeKey, existingInkKeys, batchInkKeys);
-		batchInkKeys.push({ id: index, compositeKey });
+		batchInkKeys.push({ id: sourceLine, compositeKey });
 
 		const brand = resolveOrFlag(db, 'brand', raw.Brand);
 		const line = raw.Line

@@ -216,6 +216,43 @@ describe('fpc-import (parse + commit)', () => {
 			expect(items[1].decision).toBeNull();
 		});
 
+		it('a row that matches both an already-committed pen AND an earlier row in the same batch reports both matches, not just one', () => {
+			seedExistingPen(db, {
+				brand: 'Wavecrest',
+				model: 'Vantage',
+				color: 'Amber',
+				material: 'Acrylic',
+				trimColor: 'Gold',
+				fillingSystem: 'Cartridge/Converter'
+			});
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'exact-duplicate'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId).sort((a, b) => a.id - b.id);
+			// Row 1 (line 2) already matches the seeded existing pen on its own.
+			const firstCandidateInfo = items[0].candidate_info as {
+				matches: { matchType: string; id: number }[];
+			};
+			expect(firstCandidateInfo.matches.map((m) => m.matchType).sort()).toEqual(['existing']);
+
+			// Row 2 (line 3) matches BOTH the existing pen and row 1 — neither
+			// gets dropped in favor of the other.
+			const secondCandidateInfo = items[1].candidate_info as {
+				matches: { matchType: string; id: number }[];
+			};
+			const matchTypes = secondCandidateInfo.matches.map((m) => m.matchType).sort();
+			expect(matchTypes).toEqual(['batch', 'existing']);
+
+			// The batch match's id is the source CSV line, not an opaque array
+			// position — line 2 is where row 1 (the earlier in-batch match)
+			// actually lives, something a reviewer can locate in the file.
+			const batchMatch = secondCandidateInfo.matches.find((m) => m.matchType === 'batch')!;
+			expect(batchMatch.id).toBe(2);
+		});
+
 		it('flags a near-duplicate typo found within the same batch', () => {
 			const { attemptId } = parseCatalogImport(db, {
 				pensCSV: fixture('pens', 'near-duplicate-typo'),

@@ -117,6 +117,13 @@ System` — every schema column with no safe default. `Nib` blank is a real, val
 Commit reads by attempt id and refuses if any item is undecided, including per-field. See
 [[docs/adr/2026-07-09-no-cli-at-all-for-import]].
 
+Pen duplicate detection keys on `Brand|Model|Color|Material|Trim Color` — Nib and Filling System
+deliberately excluded (Nib has no raw text to reconstruct for an already-committed pen; Filling
+System is a fixed property of a Brand+Model in practice). Both exclusions fail in the safe
+direction — extra review prompts for genuinely distinct pens, never a silent merge. A
+`matchType: 'batch'` candidate's `id` is the row's source CSV line, not its raw array position —
+something a reviewer can actually locate. See [[docs/adr/2026-07-10-identity-matching-audit]].
+
 **A commit-time re-flag (a correction that's still ambiguous, or a model/line whose brand context
 was only just settled) updates the *same* `import_flagged_items` row rather than inserting a new
 one** — `row_data`/`flag_type`/`candidate_info` replaced, `decision`/`decision_target_id`/

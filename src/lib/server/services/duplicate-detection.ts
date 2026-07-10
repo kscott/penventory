@@ -8,6 +8,14 @@ import { isNearDuplicate, similarity } from '../similarity';
 // Brand|Model|Nib|Color|Material|Trim for pens — since a real near-dupe typo
 // shows up in the raw text, not in resolved ids.
 
+// `id` means something different depending on which list a candidate came
+// from: for `existing`, it's the real pens/inks database id (something a
+// reviewer or a later merge_into decision can act on directly). For `batch`,
+// there's no database id yet — nothing in the batch is written until commit
+// — so the caller (fpc-import.ts) passes the row's 1-indexed source CSV line
+// instead, which is at least something a human reviewer can locate. Not the
+// batch array position — a bare index has no meaning to anyone looking at
+// the original file.
 export type DuplicateCandidate = { id: number; compositeKey: string };
 
 export type DuplicateMatch = {
