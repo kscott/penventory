@@ -37,7 +37,8 @@ export type FlagCandidateInfo = {
 	matches?: {
 		matchType: 'existing' | 'batch';
 		id: number;
-		compositeKey: string;
+		groupKey: string;
+		freeText: string;
 		similarity: number;
 	}[];
 	unparseableNibReason?: string;

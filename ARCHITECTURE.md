@@ -117,12 +117,22 @@ System` — every schema column with no safe default. `Nib` blank is a real, val
 Commit reads by attempt id and refuses if any item is undecided, including per-field. See
 [[docs/adr/2026-07-09-no-cli-at-all-for-import]].
 
-Pen duplicate detection keys on `Brand|Model|Color|Material|Trim Color` — Nib and Filling System
-deliberately excluded (Nib has no raw text to reconstruct for an already-committed pen; Filling
-System is a fixed property of a Brand+Model in practice). Both exclusions fail in the safe
-direction — extra review prompts for genuinely distinct pens, never a silent merge. A
-`matchType: 'batch'` candidate's `id` is the row's source CSV line, not its raw array position —
-something a reviewer can actually locate. See [[docs/adr/2026-07-10-identity-matching-audit]].
+**Duplicate identity is exact-match on resolved fields, never a fuzzy comparison of raw text.**
+Matching is two-stage: an exact-match "group key" built from each controlled field's *resolved*
+identity (a real database id, or a stable `new:<name>` marker for a field about to be created —
+never raw text), then a fuzzy-or-exact check on only the one genuinely free-text field within a
+matching group (Color for pens, Name for inks). Pens key on `Brand|Model|Material|Trim Color`; Nib
+and Filling System are excluded (Nib has no raw text to reconstruct for an already-committed pen;
+Filling System is a fixed property of a Brand+Model in practice) — both fail in the safe direction,
+extra review prompts for genuinely distinct pens, never a silent merge. Checked twice: once at
+parse when every relevant field's identity is already knowable, and unconditionally again at
+commit time (using each field's now-final resolved id) for whatever wasn't — mirroring exactly why
+Model/Line resolution itself already defers until Brand is known. A `matchType: 'batch'`
+candidate's `id` is the row's source CSV line, not its raw array position — something a reviewer
+can actually locate. See [[docs/adr/2026-07-10-identity-key-is-resolved-not-raw-text]] (supersedes
+[[docs/adr/2026-07-10-identity-matching-audit]]'s composite-string approach — found not to survive
+contact with a real ~540-row collection, where many genuinely distinct items legitimately share
+most fields by design).
 
 **A commit-time re-flag (a correction that's still ambiguous, or a model/line whose brand context
 was only just settled) updates the *same* `import_flagged_items` row rather than inserting a new
@@ -138,9 +148,8 @@ re-flagging — without this, an in-place-updated re-flag would still never be a
 [[docs/adr/2026-07-10-re-flags-update-the-original-row]].
 
 **A duplicate match, an unparseable nib, and a flagged field are independent signals — a row can
-trip more than one at once**, since duplicate detection runs on raw composite-key text
-(deliberately excluding `Nib`, which an already-committed pen has no raw text to reconstruct)
-while field resolution and nib parsing are separate mechanisms entirely. `flag_type` picks one
+trip more than one at once**, since duplicate detection, field resolution, and nib parsing are
+separate mechanisms entirely. `flag_type` picks one
 "headline" reason for the review UI (`possible_duplicate` > `unparseable_nib` >
 `needs_confirmation`, most consequential first), but `candidate_info` always carries every signal
 that actually fired, and both `isItemFullyDecided` and commit's nib-reresolution path key off the

@@ -39,8 +39,8 @@ import {
 } from './decision-resolution';
 import {
 	findDuplicateMatches,
-	type DuplicateCandidate,
-	type DuplicateMatch
+	type DuplicateMatch,
+	type IdentityCandidate
 } from './duplicate-detection';
 import { parseNibText, type ParsedNibText } from './nib-parser';
 
@@ -78,7 +78,6 @@ type PenRowData = {
 	entityType: 'pen';
 	raw: RawCsvRow;
 	sourceLine: number;
-	compositeKey: string;
 	color: string;
 	notes: string | null;
 	ownershipState: 'active' | 'retired';
@@ -99,7 +98,6 @@ type InkRowData = {
 	entityType: 'ink';
 	raw: RawCsvRow;
 	sourceLine: number;
-	compositeKey: string;
 	name: string;
 	type: string;
 	colorFpc: string;
@@ -126,78 +124,148 @@ type UnparseableRowData = {
 
 type RowData = PenRowData | InkRowData | UnparseableRowData;
 
-// --- Composite keys for duplicate detection ---------------------------------
-// Built from the *raw* CSV field values for batch rows — a real near-dupe
-// typo shows up in the raw text. For already-committed catalog rows there's
-// no raw text to recover (pens/inks store ids, not the original strings), so
-// existing-side keys are reconstructed from the resolved names instead —
-// close enough in shape for fuzzy comparison to still catch real near-dupes.
+// --- Identity keys for duplicate detection -----------------------------------
+// Exact match on *resolved* controlled-list identity, never fuzzy string
+// comparison across a whole multi-field blob — confirmed necessary against
+// Ken's real collection data (2026-07-10): the old approach fuzzy-compared a
+// single joined string of raw text, and a long *shared* prefix (Brand,
+// Model, Material, Trim Color are identical across every colorway of the
+// same pen line — completely normal in a real collection, not a data
+// problem) drowned out the one field that's actually supposed to differ,
+// flagging ~265 of 540 real rows as "possible duplicates" when they were
+// almost entirely genuinely distinct items. See
+// docs/adr/2026-07-10-identity-key-is-resolved-not-raw-text.md.
 
-// Nib is deliberately excluded from both sides — an already-committed pen's
-// nib is parsed into structured fields (nibs table), not retained as raw
-// text, so there's nothing to reconstruct it from. Every other field here
-// IS reconstructible via joins, and both sides must use the exact same
-// field set/order or the two composite keys can never look similar to each
-// other even for a genuinely identical pen (a real bug caught in review —
-// the original existing-side formula silently dropped Model and Trim Color
-// too, and inks silently dropped Line, making existing-catalog duplicate
-// detection non-functional despite being covered "in principle" by
-// findDuplicateMatches — see the completeness review, 2026-07-10).
-
-function penCompositeKey(raw: RawCsvRow): string {
-	return [raw.Brand, raw.Model, raw.Color, raw.Material, raw['Trim Color']].join('|');
+// One piece of an identity group key: the real database id once a field has
+// resolved, or a stable `new:<name>` marker for a field that's about to be
+// created. Safe as an identity marker even before creation — 'resolved'
+// already covers every exact/alias/fuzzy match against the existing catalog,
+// so 'new' is guaranteed not to collide with anything already there; the
+// marker only needs to be stable enough for two rows in the *same batch*
+// introducing the same brand-new value to group together (parse never
+// writes to the DB — see parseCatalogImport — so two rows both introducing
+// "Emberglass" both resolve 'new' independently, not 'resolved' on the
+// second one). Returns null when the field is still 'flagged' — no identity
+// can be known yet, so duplicate detection for this row defers to commit
+// time, exactly the way model/line resolution already defers when brand
+// itself is ambiguous.
+function identityPiece(result: ResolveResult, rawName: string): string | null {
+	if (result.outcome === 'resolved') return `id:${result.id}`;
+	if (result.outcome === 'new') return `new:${rawName.trim().toLowerCase()}`;
+	return null;
 }
 
-function inkCompositeKey(raw: RawCsvRow): string {
-	return [raw.Brand, raw.Line, raw.Name, raw.Type].join('|');
+// Computable only when brand/model/material/trim all have a known identity
+// (resolved or new) — never when any of them is still ambiguous ('flagged'),
+// since there's genuinely no way to know yet what real-world entity that
+// field refers to.
+//
+// Model resolution itself requires a real brandId (models are brand-scoped),
+// so resolution.model stays null whenever brand isn't 'resolved' yet — see
+// resolvePenFields — including when brand.outcome === 'new'. That's fine for
+// identity purposes even then: two rows in the *same batch* both introducing
+// the same brand-new brand AND naming the same raw Model text will resolve
+// to the exact same real ids once committed (parse never writes — nothing
+// exists yet for either row to have matched 'resolved' against — see the
+// "two rows same new brand" behavior already proven elsewhere), so the raw,
+// normalized Model text is itself a safe identity marker here, without
+// needing an actual resolveOrFlag call against a brandId that doesn't exist
+// yet. Only when brand is genuinely 'flagged' does model identity stay
+// truly unknowable, deferring the whole row to commit.
+function penIdentityGroupKey(raw: RawCsvRow, resolution: PenFieldResolution): string | null {
+	const brand = identityPiece(resolution.brand, raw.Brand);
+	if (brand === null) return null;
+	const model = resolution.model
+		? identityPiece(resolution.model, raw.Model)
+		: resolution.brand.outcome === 'new'
+			? `new:${raw.Model.trim().toLowerCase()}`
+			: null;
+	if (model === null) return null;
+	const material = identityPiece(resolution.material, raw.Material);
+	if (material === null) return null;
+	const trim = resolution.trimColor
+		? identityPiece(resolution.trimColor, raw['Trim Color'])
+		: 'none';
+	if (trim === null) return null;
+	return [brand, model, material, trim].join('|');
 }
 
-function loadExistingPenKeys(db: Db): DuplicateCandidate[] {
+// Type is a small fixed enum (INK_TYPES) validated directly, never resolved
+// through resolveOrFlag — safe to include in the group key as plain
+// normalized text, no identityPiece needed. Line mirrors penIdentityGroupKey's
+// Model handling: `line` stays null whenever brand isn't 'resolved' yet
+// (line resolution needs a real brandId), including when brand is 'new' —
+// the raw, normalized Line text is a safe fallback identity marker for that
+// case, same reasoning as Model's.
+function inkIdentityGroupKey(
+	raw: RawCsvRow,
+	brand: ResolveResult,
+	line: ResolveResult | null
+): string | null {
+	const brandPiece = identityPiece(brand, raw.Brand);
+	if (brandPiece === null) return null;
+	const linePiece = !raw.Line
+		? 'none'
+		: line
+			? identityPiece(line, raw.Line)
+			: brand.outcome === 'new'
+				? `new:${raw.Line.trim().toLowerCase()}`
+				: null;
+	if (linePiece === null) return null;
+	return [brandPiece, linePiece, raw.Type].join('|');
+}
+
+// Existing-catalog identities are built directly from the real FK columns —
+// no joins, no name reconstruction, no risk of the two sides' field sets
+// silently drifting apart (a real bug earlier in this same review: the old
+// name-based reconstruction dropped fields on one side but not the other).
+// A row's own already-resolved ids are always exactly comparable to another
+// row's, because both come from the same columns.
+function loadExistingPenIdentities(db: Db): IdentityCandidate[] {
 	const rows = db
 		.select({
 			id: pens.id,
-			brandName: brands.name,
-			modelName: models.name,
-			color: pens.color,
-			materialName: pen_materials.name,
-			trimColorName: finishes.name
+			brand_id: pens.brand_id,
+			model_id: pens.model_id,
+			material_id: pens.material_id,
+			trim_color_id: pens.trim_color_id,
+			color: pens.color
 		})
 		.from(pens)
-		.innerJoin(brands, eq(pens.brand_id, brands.id))
-		.innerJoin(models, eq(pens.model_id, models.id))
-		.innerJoin(pen_materials, eq(pens.material_id, pen_materials.id))
-		.leftJoin(finishes, eq(pens.trim_color_id, finishes.id))
 		.all();
 
 	return rows.map((row) => ({
 		id: row.id,
-		compositeKey: [
-			row.brandName,
-			row.modelName,
-			row.color,
-			row.materialName,
-			row.trimColorName ?? ''
-		].join('|')
+		groupKey: [
+			`id:${row.brand_id}`,
+			`id:${row.model_id}`,
+			`id:${row.material_id}`,
+			row.trim_color_id !== null ? `id:${row.trim_color_id}` : 'none'
+		].join('|'),
+		freeText: row.color
 	}));
 }
 
-function loadExistingInkKeys(db: Db): DuplicateCandidate[] {
+function loadExistingInkIdentities(db: Db): IdentityCandidate[] {
 	const rows = db
 		.select({
 			id: inks.id,
-			brandName: brands.name,
-			lineName: lines.name,
-			name: inks.name,
-			type: inks.type
+			brand_id: inks.brand_id,
+			line_id: inks.line_id,
+			type: inks.type,
+			name: inks.name
 		})
 		.from(inks)
-		.innerJoin(brands, eq(inks.brand_id, brands.id))
-		.leftJoin(lines, eq(inks.line_id, lines.id))
 		.all();
 
 	return rows.map((row) => ({
 		id: row.id,
-		compositeKey: [row.brandName, row.lineName ?? '', row.name, row.type].join('|')
+		groupKey: [
+			`id:${row.brand_id}`,
+			row.line_id !== null ? `id:${row.line_id}` : 'none',
+			row.type
+		].join('|'),
+		freeText: row.name
 	}));
 }
 
@@ -273,7 +341,6 @@ function buildPenRowData(
 		entityType: 'pen',
 		raw,
 		sourceLine,
-		compositeKey: penCompositeKey(raw),
 		color: raw.Color,
 		notes: raw.Comment || null,
 		ownershipState: raw.Archived === 'true' ? 'retired' : 'active',
@@ -362,10 +429,10 @@ export function parseCatalogImport(
 	const pensRaw = parse(pensCSV, CSV_OPTIONS) as RawCsvRow[];
 	const inksRaw = parse(inksCSV, CSV_OPTIONS) as RawCsvRow[];
 
-	const existingPenKeys = loadExistingPenKeys(db);
-	const existingInkKeys = loadExistingInkKeys(db);
-	const batchPenKeys: DuplicateCandidate[] = [];
-	const batchInkKeys: DuplicateCandidate[] = [];
+	const existingPenIdentities = loadExistingPenIdentities(db);
+	const existingInkIdentities = loadExistingInkIdentities(db);
+	const batchPenIdentities: IdentityCandidate[] = [];
+	const batchInkIdentities: IdentityCandidate[] = [];
 
 	let flaggedCount = 0;
 
@@ -389,15 +456,27 @@ export function parseCatalogImport(
 			continue;
 		}
 
-		const compositeKey = penCompositeKey(raw);
-		const dupMatches = findDuplicateMatches(compositeKey, existingPenKeys, batchPenKeys);
-		// sourceLine, not the raw batch array index — a matchType:'batch'
-		// candidate's `id` needs to mean something a reviewer can act on (line
-		// 6 of the CSV), not an internal position that has no meaning outside
-		// this function. See docs/adr/2026-07-10-identity-matching-audit.md.
-		batchPenKeys.push({ id: sourceLine, compositeKey });
-
+		// Resolve first, THEN compare identity — Ken's framing, 2026-07-10:
+		// duplicate detection on raw text can't tell a real near-dupe from
+		// several genuinely distinct rows that happen to share most fields by
+		// design (every colorway of the same pen line). Only computable when
+		// brand/model/material/trim all have a known identity already (see
+		// penIdentityGroupKey) — otherwise this row's duplicate check defers
+		// to commit time, same as model resolution itself already defers
+		// when brand is ambiguous.
 		const resolution = resolvePenFields(db, raw);
+		const groupKey = penIdentityGroupKey(raw, resolution);
+		let dupMatches: DuplicateMatch[] = [];
+		if (groupKey !== null) {
+			dupMatches = findDuplicateMatches(
+				groupKey,
+				raw.Color,
+				existingPenIdentities,
+				batchPenIdentities
+			);
+			batchPenIdentities.push({ id: sourceLine, groupKey, freeText: raw.Color });
+		}
+
 		const rowData = buildPenRowData(raw, sourceLine, resolution);
 		const flaggedFields = fieldsNeedingConfirmation(penFlaggableResolutions(resolution));
 		const flag = determineFlag(dupMatches, resolution.nib, flaggedFields);
@@ -407,9 +486,6 @@ export function parseCatalogImport(
 
 	for (const [index, raw] of inksRaw.entries()) {
 		const sourceLine = index + 2;
-		const compositeKey = inkCompositeKey(raw);
-		const dupMatches = findDuplicateMatches(compositeKey, existingInkKeys, batchInkKeys);
-		batchInkKeys.push({ id: sourceLine, compositeKey });
 
 		const brand = resolveOrFlag(db, 'brand', raw.Brand);
 		const line = raw.Line
@@ -419,13 +495,24 @@ export function parseCatalogImport(
 			: null;
 		const maker = raw.Maker ? resolveOrFlag(db, 'brand', raw.Maker) : null;
 
+		const groupKey = inkIdentityGroupKey(raw, brand, line);
+		let dupMatches: DuplicateMatch[] = [];
+		if (groupKey !== null) {
+			dupMatches = findDuplicateMatches(
+				groupKey,
+				raw.Name,
+				existingInkIdentities,
+				batchInkIdentities
+			);
+			batchInkIdentities.push({ id: sourceLine, groupKey, freeText: raw.Name });
+		}
+
 		const notesParts = [raw.Comment, raw['Private Comment']].filter((v) => v && v.trim() !== '');
 
 		const rowData: InkRowData = {
 			entityType: 'ink',
 			raw,
 			sourceLine,
-			compositeKey,
 			name: raw.Name,
 			type: raw.Type,
 			colorFpc: raw.Color,
@@ -598,20 +685,17 @@ function resolveRowForCommit(
 		}
 		const resolution = resolvePenFields(tx, rowData.raw);
 		const newRowData = buildPenRowData(rowData.raw, rowData.sourceLine, resolution);
-		// Duplicate detection was skipped at parse time (a blank required
-		// field means resolution never ran at all — see PEN_REQUIRED_FIELDS),
-		// but a correction can turn the composite key into an exact or
-		// near match of an already-committed pen just as easily as any fresh
-		// row could. Checked against tx's current view of `pens` — which, by
-		// read-your-own-writes within this same transaction, also catches a
-		// match against a pen committed earlier in *this* transaction, not
-		// only the catalog as it stood before commit started. Without this,
-		// a corrected row committed as a silent, undetected duplicate — see
-		// docs/adr/2026-07-10-flag-signals-are-not-mutually-exclusive.md's
-		// sibling finding.
-		const dupMatches = findDuplicateMatches(newRowData.compositeKey, loadExistingPenKeys(tx), []);
+		// Duplicate detection itself is NOT run here — it's deferred to the
+		// universal, authoritative check runCommitTransaction runs right
+		// before actually creating the pen, once every controlled field has
+		// its final resolved id (this row's identity can't be reliably known
+		// yet at this point the same way a fresh parse-time row often can't —
+		// see penIdentityGroupKey). That single check point covers every pen
+		// unconditionally, corrected-unparseable_row included, so there's no
+		// need for a second, earlier, necessarily-partial one here. See
+		// docs/adr/2026-07-10-identity-key-is-resolved-not-raw-text.md.
 		const flaggedFields = fieldsNeedingConfirmation(penFlaggableResolutions(resolution));
-		const flag = determineFlag(dupMatches, resolution.nib, flaggedFields);
+		const flag = determineFlag([], resolution.nib, flaggedFields);
 		if (flag) {
 			newFlags.push({
 				originalItemId: item.id,
@@ -846,6 +930,57 @@ function runCommitTransaction(
 					filling_systems
 				);
 
+				// The universal, authoritative duplicate check — runs for
+				// every pen right before writing it, using each controlled
+				// field's now-final resolved id (never a speculative one —
+				// by this point brandId/modelId/materialId/trimColorId are
+				// exactly what's about to be written). Catches everything
+				// the parse-time check couldn't (any field that was
+				// ambiguous or brand-new at parse) and anything a
+				// mid-import correction changed, without needing a second,
+				// necessarily-partial check anywhere else in this function —
+				// see docs/adr/2026-07-10-identity-key-is-resolved-not-raw-text.md.
+				// loadExistingPenIdentities(tx) reflects this transaction's
+				// own writes so far too (read-your-own-writes), so a match
+				// against a pen created earlier in this same commit is caught
+				// exactly like one already sitting in the catalog.
+				//
+				// Skipped when item.flag_type is already 'possible_duplicate'
+				// — that means this exact concern was already surfaced (at
+				// parse, or by an earlier re-flag round) and the row's
+				// current decision already answers it (import-anyway or the
+				// row wouldn't have reached here at all — 'skip' short-
+				// circuits earlier in the loop). Re-running the check here
+				// too would rediscover the identical match and push another
+				// re-flag on top of a decision that already accounted for
+				// it — confirmed while fixing this: correcting an
+				// unparseable Nib on an already-possible_duplicate row (a
+				// combination this session's flag-signal-masking fix made
+				// reachable) re-triggered this check and overrode the
+				// reviewer's already-made "import anyway" call.
+				if (item.flag_type !== 'possible_duplicate') {
+					const commitGroupKey = [
+						`id:${brandId}`,
+						`id:${modelId}`,
+						`id:${materialId}`,
+						trimColorId !== null ? `id:${trimColorId}` : 'none'
+					].join('|');
+					const commitDupMatches = findDuplicateMatches(
+						commitGroupKey,
+						rowData.color,
+						loadExistingPenIdentities(tx)
+					);
+					if (commitDupMatches.length > 0) {
+						newFlags.push({
+							originalItemId: item.id,
+							rowData,
+							flagType: 'possible_duplicate',
+							candidateInfo: { fields: {}, nibValueFlags: [], matches: commitDupMatches }
+						});
+						continue;
+					}
+				}
+
 				const pen = create(tx, pens, {
 					brand_id: brandId,
 					model_id: modelId,
@@ -978,6 +1113,31 @@ function runCommitTransaction(
 				const makerId = rowData.raw.Maker
 					? applyDecision(tx, item, 'maker', 'brand', rowData.raw.Maker, undefined, brands)
 					: null;
+
+				// Same universal, authoritative check as the pen side — see
+				// its comment above, including why it's skipped when
+				// item.flag_type is already 'possible_duplicate'.
+				if (item.flag_type !== 'possible_duplicate') {
+					const commitGroupKey = [
+						`id:${brandId}`,
+						lineId !== null ? `id:${lineId}` : 'none',
+						rowData.type
+					].join('|');
+					const commitDupMatches = findDuplicateMatches(
+						commitGroupKey,
+						rowData.name,
+						loadExistingInkIdentities(tx)
+					);
+					if (commitDupMatches.length > 0) {
+						newFlags.push({
+							originalItemId: item.id,
+							rowData,
+							flagType: 'possible_duplicate',
+							candidateInfo: { fields: {}, nibValueFlags: [], matches: commitDupMatches }
+						});
+						continue;
+					}
+				}
 
 				create(tx, inks, {
 					brand_id: brandId,

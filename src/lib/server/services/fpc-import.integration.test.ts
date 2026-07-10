@@ -253,14 +253,37 @@ describe('fpc-import (parse + commit)', () => {
 			expect(batchMatch.id).toBe(2);
 		});
 
-		it('flags a near-duplicate typo found within the same batch', () => {
+		it('flags a near-duplicate typo in the free-text field (Color) found within the same batch', () => {
+			// Brand/Model/Material/Trim are identical raw text on both rows —
+			// same group identity (both 'new', matching normalized text — see
+			// penIdentityGroupKey) — Color is the one field that's genuinely
+			// free text and gets fuzzy-compared: "Amber" vs "Ambar".
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'near-duplicate-color-typo'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[1].flag_type).toBe('possible_duplicate');
+		});
+
+		it('does NOT flag a Model typo as a duplicate — Model is part of the exact identity group key, not the fuzzy free-text field, so a typo there surfaces as needs_confirmation once the brand-new brand exists, not as possible_duplicate', () => {
+			// "Vantage" vs "Vantag" — same shape as the old near-duplicate-typo
+			// fixture, but under the resolve-first design this is a
+			// controlled-list ambiguity (Model), never a duplicate-detection
+			// concern. Both rows' Brand is brand-new (nothing seeded), so
+			// Model resolution itself is deferred to commit for both — see
+			// resolvePenFields. At parse, neither row's identity is even
+			// computable yet (penIdentityGroupKey returns null whenever
+			// resolution.model is null and brand isn't 'new' with matching
+			// raw text), so no possible_duplicate flag appears at all.
 			const { attemptId } = parseCatalogImport(db, {
 				pensCSV: fixture('pens', 'near-duplicate-typo'),
 				inksCSV: fixture('inks', 'empty')
 			});
 
 			const items = flaggedItemsFor(attemptId);
-			expect(items[1].flag_type).toBe('possible_duplicate');
+			expect(items.map((i) => i.flag_type)).toEqual([null, null]);
 		});
 
 		it('flags brand drift against an already-committed catalog brand (character-typo signal)', () => {
@@ -514,41 +537,6 @@ describe('fpc-import (parse + commit)', () => {
 			expect(items[0].flag_type).toBe('needs_confirmation');
 			const candidateInfo = items[0].candidate_info as { fields: Record<string, unknown> };
 			expect(Object.keys(candidateInfo.fields).sort()).toEqual(['brand', 'pen_material']);
-		});
-
-		it('a row that is both a possible_duplicate AND has an ambiguous Brand preserves both signals, not just the duplicate one', () => {
-			// Real scenario: composite-key duplicate detection runs on raw text,
-			// independent of resolveOrFlag — a row can simultaneously look like a
-			// near-dupe of an existing pen (Model/Color/Material/Trim all match)
-			// AND have a Brand value that's itself a typo needing its own
-			// decision. Confirmed bug (2026-07-10): determineFlag's if/else chain
-			// picked possible_duplicate and silently discarded the brand
-			// ambiguity — candidate_info had no `fields` key at all, so there was
-			// no way to even decide the brand in the review UI; commit would
-			// throw a confusing "still ambiguous, no recorded decision" error
-			// with nothing pointing back to what needed deciding.
-			seedExistingPen(db, {
-				brand: 'Wavecrest',
-				model: 'Drifter',
-				color: 'Slate',
-				material: 'Resin',
-				trimColor: 'Silver',
-				fillingSystem: 'Piston Filler'
-			});
-
-			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'brand-drift'),
-				inksCSV: fixture('inks', 'empty')
-			});
-
-			const items = flaggedItemsFor(attemptId);
-			expect(items[0].flag_type).toBe('possible_duplicate');
-			const candidateInfo = items[0].candidate_info as {
-				matches: { matchType: string }[];
-				fields: Record<string, unknown>;
-			};
-			expect(candidateInfo.matches.length).toBeGreaterThan(0);
-			expect(candidateInfo.fields.brand).toBeDefined();
 		});
 
 		it('tracks the source CSV line number on every row, 1-indexed including the header', () => {
@@ -813,6 +801,92 @@ describe('fpc-import (parse + commit)', () => {
 			expect(result.pensCreated).toBe(0);
 			expect(result.nibsCreated).toBe(0);
 			expect(db.select().from(pens).all()).toEqual([]);
+		});
+
+		it('a row with an ambiguous Brand that ALSO turns out to match an existing pen once brand is decided: both signals surface, in their own review rounds, neither silently lost', async () => {
+			// Under the resolve-first identity design (2026-07-10 —
+			// docs/adr/2026-07-10-identity-key-is-resolved-not-raw-text.md),
+			// duplicate detection can't run until Brand itself has a known
+			// identity — a 'flagged' brand means penIdentityGroupKey can't be
+			// computed, so this row gets ONLY needs_confirmation (brand) at
+			// parse. Once brand is decided (merge_into the seeded brand) and
+			// commit proceeds, the row's Model/Material/Trim/Color turn out to
+			// exactly match an already-seeded pen — the universal commit-time
+			// duplicate check (which runs precisely because this row's
+			// flag_type isn't already 'possible_duplicate') catches it and
+			// re-flags in place. Two real signals, two review rounds, nothing
+			// silently dropped — the two-phase version of the same guarantee
+			// proven for the same-transaction case in
+			// docs/adr/2026-07-10-flag-signals-are-not-mutually-exclusive.md.
+			seedExistingPen(db, {
+				brand: 'Wavecrest',
+				model: 'Drifter',
+				color: 'Slate',
+				material: 'Resin',
+				trimColor: 'Silver',
+				fillingSystem: 'Piston Filler'
+			});
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'brand-drift'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			expect(item.flag_type).toBe('needs_confirmation');
+			const parseCandidateInfo = item.candidate_info as { fields: Record<string, unknown> };
+			expect(parseCandidateInfo.fields.brand).toBeDefined();
+
+			const existingBrand = db.select().from(brands).where(eq(brands.name, 'Wavecrest')).get()!;
+			decideField(item.id, 'brand', 'merge_into', existingBrand.id);
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+
+			const reflagged = flaggedItemsFor(attemptId)[0];
+			expect(reflagged.id).toBe(item.id);
+			expect(reflagged.flag_type).toBe('possible_duplicate');
+			const commitCandidateInfo = reflagged.candidate_info as { matches: { matchType: string }[] };
+			expect(commitCandidateInfo.matches.length).toBeGreaterThan(0);
+
+			decideRow(item.id, 'import');
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(1);
+			expect(db.select().from(pens).all()).toHaveLength(2);
+		});
+
+		it('an ink whose Brand is ambiguous at parse turns out to duplicate an existing ink once brand is decided — the ink-side counterpart to the pen commit-time duplicate check', async () => {
+			const existingBrand = db.insert(brands).values({ name: 'Thistlebrook' }).returning().get();
+			db.insert(inks)
+				.values({
+					brand_id: existingBrand.id,
+					name: 'Fenwood',
+					type: 'bottle',
+					color_fpc: '#7a5230',
+					ownership_state: 'active'
+				})
+				.run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'brand-drift')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			expect(item.flag_type).toBe('needs_confirmation');
+			decideField(item.id, 'brand', 'merge_into', existingBrand.id);
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+
+			const reflagged = flaggedItemsFor(attemptId)[0];
+			expect(reflagged.id).toBe(item.id);
+			expect(reflagged.flag_type).toBe('possible_duplicate');
+
+			decideRow(item.id, 'import');
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.inksCreated).toBe(1);
+			expect(db.select().from(inks).all()).toHaveLength(2);
 		});
 
 		it('a possible_duplicate row whose Nib is also unparseable refuses on import rather than silently committing without a nib — confirmed bug, 2026-07-10', async () => {
@@ -1860,6 +1934,38 @@ describe('fpc-import (parse + commit)', () => {
 			expect(brand.name).toBe('Hollowreed');
 			expect(model).toMatchObject({ brand_id: brand.id, name: 'Meridian' });
 			expect(pen.model_id).toBe(model.id);
+		});
+
+		it('a Model typo against a same-batch, brand-new brand is caught once that brand and its first model actually exist — deferred resolution catches typos against rows created earlier in the same commit, not just pre-existing catalog data', async () => {
+			// "Vantage" (row 1) / "Vantag" (row 2) — same shape proven clean
+			// at parse (near-duplicate-typo.csv, neither row's identity is
+			// computable at parse — see the parse-time test above). At
+			// commit, row 1 creates brand "Wavecrest" and model "Vantage".
+			// Row 2's deferred model resolution then runs resolveOrFlag
+			// against a models table that NOW has "Vantage" in it (visible
+			// via read-your-own-writes within this same transaction) — "Vantag"
+			// scores a fuzzy match against it, so row 2 gets re-flagged
+			// needs_confirmation for 'model' instead of silently creating a
+			// second, near-duplicate model under the same brand.
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'near-duplicate-typo'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			decideAllClean(attemptId, 'import');
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+
+			// Row 1 committed within the transaction that then rolled back —
+			// nothing persists from a rolled-back attempt.
+			expect(db.select().from(pens).all()).toEqual([]);
+
+			const items = flaggedItemsFor(attemptId);
+			const reflagged = items.find((i) => i.flag_type === 'needs_confirmation')!;
+			expect(reflagged).toBeDefined();
+			const candidateInfo = reflagged.candidate_info as { fields: Record<string, unknown> };
+			expect(candidateInfo.fields.model).toBeDefined();
 		});
 
 		it('two rows sharing the same new brand AND the same new model create exactly one of each, both pens referencing them — not two competing model rows', async () => {
