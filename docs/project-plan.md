@@ -429,7 +429,8 @@ migration in **Phase 3**, once `photos` exists (true if a swatch photo/composite
 the same logic and still waits for Phase 4. `pen_nibs` does **not** — pulled forward into
 **Phase 1 step 5**, since the FPC import needs it to link an imported pen to its parsed stock
 nib; Phase 4 step 1 builds the assign/remove UI and "current nib" query on top of that
-already-existing schema, not the schema itself. See `ARCHITECTURE.md`'s 2026-07-09 entry.
+already-existing schema, not the schema itself. See
+`docs/adr/2026-07-09-pen-nibs-pulled-forward-to-phase1.md`.
 
 ---
 
@@ -441,7 +442,7 @@ live in `docs/phaseN-plan.md` (`phase1-plan.md` through `phase6-plan.md`, plus `
 — see below), same treatment `phase0-plan.md` already got.
 
 **Phase 1.1 exists because import earned its own phase, inserted without renumbering anything
-after it** — see `ARCHITECTURE.md`'s 2026-07-09 entries. Numbered `1.1` rather than shifting
+after it** — see `docs/adr/2026-07-09-import-gets-own-phase-1-1.md`. Numbered `1.1` rather than shifting
 Phases 2–6 up by one: a pure renumbering cascade (file renames plus every cross-reference) for no
 information gain. It sits between Phase 1 and Phase 2 because Phase 2 (Visual browse) already
 assumes real pen/ink data exists by the time it starts.
@@ -464,8 +465,8 @@ All of the above green before any real feature exists.
   collapsing spelling drift into the canonical lists), the free-text `Nib` column parser,
   `resolveOrFlag`/duplicate-detection integration, and commit — framework-agnostic
   (`lib/server/services`), tested directly against checked-in fixture CSVs
-- **No CLI at all, not even for local testing** — see `ARCHITECTURE.md`'s 2026-07-09 "all work
-  through the app's UI, period" rule. There is no way to import real data anywhere, even locally,
+- **No CLI at all, not even for local testing** — see
+  `docs/adr/2026-07-09-no-cli-at-all-for-import.md`. There is no way to import real data anywhere, even locally,
   until Phase 1.1 wraps this same service logic in an authenticated web feature.
 
 ### Phase 1.1 — Import

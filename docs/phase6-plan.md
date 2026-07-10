@@ -42,5 +42,5 @@ explicit **decide-then-build** step here — none of them get a silent default.
 ## Definition of done
 
 Each of the three open questions is either built (with tests) or explicitly declined
-with reasoning recorded in `ARCHITECTURE.md`'s decision log — not left ambiguous.
+with reasoning recorded as its own file in `docs/adr/` — not left ambiguous.
 Export exists.

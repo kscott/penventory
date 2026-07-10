@@ -25,7 +25,7 @@ app, and the ink bulk-edit feature that directly targets FPC's worst pain point
    **and** `purity_id`/`base_size_id`/`point_size_id` get the same "Add new..."
    picker pattern too, just without the fuzzy-candidate suggestion step (they're
    exact-match-only, never in `ALIASABLE_TYPES` — see `phase1-plan.md` step 4 and
-   `ARCHITECTURE.md`'s 2026-07-09 entry). This is the live-entry answer to "I
+   `docs/adr/2026-07-09-nib-value-lookup-tables-not-enums.md`). This is the live-entry answer to "I
    bought a new-to-me pen with a nib size I've never recorded before": type it in
    the form, "Add new..." creates the lookup row right there, no deploy, no
    waiting for a batch import to notice it. Before this step ships, that gap is

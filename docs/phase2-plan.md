@@ -3,8 +3,9 @@
 Per the vision doc's build-sequencing decision, this is "the actual point of building
 an app" — the visual browsing/reshuffling experience is a source of joy independent of
 any ledger or AI feature. All five views run entirely off `ink.color` hex values —
-real ones, populated via Phase 1.1's web import feature, not Phase 1's local-only CLI
-(see `ARCHITECTURE.md`'s 2026-07-09 entries) — no photo pipeline dependency.
+real ones, populated via Phase 1.1's web import feature, not Phase 1's fixture-only
+service logic (see `docs/adr/2026-07-09-no-cli-at-all-for-import.md`) — no photo
+pipeline dependency.
 
 Auth already exists by this point — built in Phase 1.1 (needed there first, since that's
 the first web-reachable feature mutating real data), not repeated here. Every route in

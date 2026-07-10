@@ -10,7 +10,7 @@ blended with Ken's own entries, per the vision doc's explicit rules.
 1. **Decision step (no code).** Lock in: Claude accesses Penventory via a
    Zod-validated HTTP API under `/api/` — not a bespoke skill-only mechanism. The app
    itself never calls an LLM; Claude-the-agent is the sole consumer/reasoner over this
-   API. Record this in `ARCHITECTURE.md`'s decision log.
+   API. Already recorded as `docs/adr/2026-07-08-claude-access-via-http-api.md`.
    This is the load-bearing decision for the rest of the phase: it's what keeps every
    service below fully unit-testable with zero live external dependency — the "no
    code path may require live external system state to test" rule would otherwise be

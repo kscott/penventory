@@ -159,7 +159,8 @@ conversation turn out to need different answers — worth separating clearly:
    (`NIB_PURITY_SEED`/`NIB_BASE_SIZE_SEED`/`NIB_POINT_SIZE_SEED` in `schema.ts`),
    resolved by exact match only (found, or flagged for an explicit decision —
    never fuzzy-suggested, never silently created), so a new value afterward is
-   a data operation, not a migration. See `ARCHITECTURE.md`'s 2026-07-09 entry
+   a data operation, not a migration. See
+   `docs/adr/2026-07-09-nib-value-lookup-tables-not-enums.md`
    for the full reasoning, and `phase3-plan.md` step 3 for how the live-entry
    "add new value" path surfaces once Nib CRUD exists. No `purchases`,
    `inkings`, `pen_nibs`, `used`, or `swatched` — see "Deferred columns" below.
@@ -188,8 +189,8 @@ conversation turn out to need different answers — worth separating clearly:
    (`lib/server/services`, per the existing layered architecture — depends on step 5's
    repository interfaces, not Drizzle directly). **There is no CLI, not even for local
    testing** — the only human-facing interface for this feature is the browser, built
-   in Phase 1.1 (see `ARCHITECTURE.md`'s 2026-07-09 "all work happens through the
-   app's UI, period" rule — no shell, no SSH, no CLI, no hand-edited files, not even
+   in Phase 1.1 (see `docs/adr/2026-07-09-no-cli-at-all-for-import.md`
+   — no shell, no SSH, no CLI, no hand-edited files, not even
    locally, not even temporarily). This step's tests call the service functions
    directly against a real temp-file SQLite (`mkdtempSync` + `migrateDatabase`) — the
    exact same pattern step 3's (`resolveOrFlag`) and step 5's (repository) tests
@@ -375,7 +376,8 @@ once its owning feature (purchase tracking) exists — Phase 4, not here.
 FPC import (step 6) needs it *now* to link an imported pen to the `nibs` row parsed
 from its stock nib — not deferred to whatever phase gives it a UI. Phase 4 step 1
 builds the assign/remove flow and "current nib" query on top of this already-existing
-schema; it doesn't create the table. See `ARCHITECTURE.md`'s 2026-07-09 entry.
+schema; it doesn't create the table. See
+`docs/adr/2026-07-09-pen-nibs-pulled-forward-to-phase1.md`.
 
 ## Definition of done
 
@@ -386,7 +388,7 @@ logic** exists (catalog import and the separate color-refresh mode both) and is 
 directly against fixture CSVs — **no CLI, no way for Ken to import real data anywhere,
 even locally**, since reviewing/deciding on flagged items is real work on real data and
 per the standing rule that only ever happens through the app's UI (see
-`ARCHITECTURE.md`'s "all work through the app's UI, period" rule). Real import
+`docs/adr/2026-07-09-no-cli-at-all-for-import.md`). Real import
 capability is entirely **Phase 1.1's** definition of done, not this phase's — Phase 1
 only has to prove the underlying logic works against fixtures. `/healthz` and `/metrics`
 live. All gates above green in CI (lint, typecheck, unit+coverage ≥90%, integration —

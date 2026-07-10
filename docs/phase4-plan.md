@@ -92,7 +92,7 @@ the two dashboard views the vision doc confirmed as worth keeping.
    stays the formal install/removal history (mostly just the stock nib from
    acquisition, plus the rare deliberate permanent reassignment); it simply stops
    being authoritative for *display* once real inking history exists. See
-   `ARCHITECTURE.md`'s 2026-07-09 entry.
+   `docs/adr/2026-07-09-pen-nibs-inkings-independent-facts.md`.
    *Gate:* unit test for the revised query — asserts most-recent-inking's nib wins
    over a `pen_nibs` open row that names a different nib, and asserts the
    `pen_nibs`-only fallback still holds for a pen with no inkings.
@@ -101,7 +101,7 @@ the two dashboard views the vision doc confirmed as worth keeping.
    — see `phase1-plan.md` step 7's note). Same service-logic-only split as Phase 1
    step 6 / Phase 1.1: the parsing/matching/commit logic is framework-agnostic service
    code, tested directly against fixtures — **no CLI, not even for local testing** (see
-   `ARCHITECTURE.md`'s "all work through the app's UI, period" rule — there is no path
+   `docs/adr/2026-07-09-no-cli-at-all-for-import.md` — there is no path
    to importing real data outside the app's own UI, ever, for any import operation). A
    real authenticated web equivalent, matching Phase 1.1's pattern (persisting to
    `import_attempts`/`import_flagged_items`, reviewed/decided in the browser), is a

@@ -32,11 +32,14 @@ Read these every session, without exception:
 - `docs/phase0-plan.md` — current phase, ordered steps, gate per step. `docs/phase1-plan.md`
   through `phase6-plan.md` cover the phases after it, planned in full before Phase 1 execution
   starts — same ordered-steps-with-gates treatment. `docs/phase1.1-plan.md` (Import) was added
-  later, inserted between Phase 1 and Phase 2 without renumbering — see `ARCHITECTURE.md`'s
-  2026-07-09 entries.
-- `ARCHITECTURE.md` — decision log. How continuity holds across sessions without re-deriving
-  settled decisions. Decisions only, never a todo list — see `docs/punch-list.md` for small
-  one-off reminders, and GitHub issues for the real backlog.
+  later, inserted between Phase 1 and Phase 2 without renumbering — see
+  `docs/adr/2026-07-09-import-gets-own-phase-1-1.md`.
+- `ARCHITECTURE.md` — the living guide to how the app is actually built: layered structure,
+  recurring patterns (`resolveOrFlag`, computed values, migrations, the UI-only operating rule),
+  updated as they change. `docs/adr/` holds the dated decision record behind every choice in
+  it, one file per decision (`YYYY-MM-DD-slug.md`, never renumbered) — how continuity holds
+  across sessions without re-deriving settled decisions. Decisions only, never a todo list —
+  see `docs/punch-list.md` for small one-off reminders, and GitHub issues for the real backlog.
 
 Raw FPC export data and the prototype color-clustering tooling that inspired this project
 (`gen_inks.py` and friends) live at `~/Notes/personal/ink-collection/` — not in this repo. That

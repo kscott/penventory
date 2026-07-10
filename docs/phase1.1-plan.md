@@ -1,7 +1,8 @@
 # Penventory — Phase 1.1 Plan: Import (web-based)
 
 Inserted between Phase 1 and Phase 2, not appended as Phase 7 or squeezed into Phase 2/3 —
-see `ARCHITECTURE.md`'s 2026-07-09 entries for why. Short version: the FPC import isn't actually
+see `docs/adr/2026-07-09-import-gets-own-phase-1-1.md` and
+`docs/adr/2026-07-09-no-cli-at-all-for-import.md` for why. Short version: the FPC import isn't actually
 *done*, in any usable sense, until it's a real authenticated web feature. Phase 1 builds the
 underlying parsing/`resolveOrFlag`/duplicate-detection **service logic** and proves it out with
 direct unit/integration tests — no CLI at all, not even for local testing (same pattern every
