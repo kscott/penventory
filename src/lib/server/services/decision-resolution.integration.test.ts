@@ -178,6 +178,26 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 			).toThrow(CommitRefusedError);
 			expect(db.select().from(brands).all()).toHaveLength(1);
 		});
+
+		it('import + malformed candidate_info (decidedField set, but no matching entry in fields) — fails safe, does not block or crash', () => {
+			// candidate_info is loosely-typed JSON out of a DB column, not
+			// compiler-enforced — decidedField could in principle point at a
+			// field with no recorded candidates at all (e.g. a future caller
+			// bug). hasContainsSignal has no evidence of 'contains' here, so it
+			// must not block; absence of evidence isn't evidence of a contains
+			// match. Proves the defensive branch returns false rather than
+			// throwing a TypeError on the missing lookup.
+			const item = insertFlaggedItem({
+				decision: 'import',
+				candidateInfo: { decidedField: 'brand', nibValueFlags: [], fields: {} }
+			});
+
+			const id = applyDecision(db, item, 'brand', 'brand', 'Brand New Co', undefined, brands);
+
+			const allBrands = db.select().from(brands).all();
+			expect(allBrands).toHaveLength(1);
+			expect(allBrands[0].id).toBe(id);
+		});
 	});
 
 	describe('this field is NOT the one the flag names (isDecidedField = false)', () => {

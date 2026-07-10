@@ -94,8 +94,19 @@ type RowData = PenRowData | InkRowData;
 // existing-side keys are reconstructed from the resolved names instead —
 // close enough in shape for fuzzy comparison to still catch real near-dupes.
 
+// Nib is deliberately excluded from both sides — an already-committed pen's
+// nib is parsed into structured fields (nibs table), not retained as raw
+// text, so there's nothing to reconstruct it from. Every other field here
+// IS reconstructible via joins, and both sides must use the exact same
+// field set/order or the two composite keys can never look similar to each
+// other even for a genuinely identical pen (a real bug caught in review —
+// the original existing-side formula silently dropped Model and Trim Color
+// too, and inks silently dropped Line, making existing-catalog duplicate
+// detection non-functional despite being covered "in principle" by
+// findDuplicateMatches — see the completeness review, 2026-07-10).
+
 function penCompositeKey(raw: RawCsvRow): string {
-	return [raw.Brand, raw.Model, raw.Nib, raw.Color, raw.Material, raw['Trim Color']].join('|');
+	return [raw.Brand, raw.Model, raw.Color, raw.Material, raw['Trim Color']].join('|');
 }
 
 function inkCompositeKey(raw: RawCsvRow): string {
@@ -107,30 +118,47 @@ function loadExistingPenKeys(db: Db): DuplicateCandidate[] {
 		.select({
 			id: pens.id,
 			brandName: brands.name,
+			modelName: models.name,
 			color: pens.color,
-			materialName: pen_materials.name
+			materialName: pen_materials.name,
+			trimColorName: finishes.name
 		})
 		.from(pens)
 		.innerJoin(brands, eq(pens.brand_id, brands.id))
+		.innerJoin(models, eq(pens.model_id, models.id))
 		.innerJoin(pen_materials, eq(pens.material_id, pen_materials.id))
+		.innerJoin(finishes, eq(pens.trim_color_id, finishes.id))
 		.all();
 
 	return rows.map((row) => ({
 		id: row.id,
-		compositeKey: [row.brandName, row.color, row.materialName].join('|')
+		compositeKey: [
+			row.brandName,
+			row.modelName,
+			row.color,
+			row.materialName,
+			row.trimColorName
+		].join('|')
 	}));
 }
 
 function loadExistingInkKeys(db: Db): DuplicateCandidate[] {
 	const rows = db
-		.select({ id: inks.id, brandName: brands.name, name: inks.name, type: inks.type })
+		.select({
+			id: inks.id,
+			brandName: brands.name,
+			lineName: lines.name,
+			name: inks.name,
+			type: inks.type
+		})
 		.from(inks)
 		.innerJoin(brands, eq(inks.brand_id, brands.id))
+		.leftJoin(lines, eq(inks.line_id, lines.id))
 		.all();
 
 	return rows.map((row) => ({
 		id: row.id,
-		compositeKey: [row.brandName, row.name, row.type].join('|')
+		compositeKey: [row.brandName, row.lineName ?? '', row.name, row.type].join('|')
 	}));
 }
 
@@ -347,6 +375,16 @@ export type CommitResult = {
 	nibsCreated: number;
 };
 
+function findOrCreateExactMatch(
+	db: Db,
+	table: typeof nib_base_sizes | typeof nib_purities,
+	name: string
+): number {
+	const existing = db.select().from(table).where(eq(table.name, name)).get();
+	if (existing) return existing.id;
+	return db.insert(table).values({ name }).returning().get().id;
+}
+
 export async function commitImportAttempt(
 	db: Db,
 	sqlite: Database.Database,
@@ -523,18 +561,21 @@ function runCommitTransaction(
 								finishes
 							)
 						: null;
-					const baseSize = tx
-						.select()
-						.from(nib_base_sizes)
-						.where(eq(nib_base_sizes.name, rowData.nib.baseSizeName))
-						.get();
-					const purity = rowData.nib.purityName
-						? tx
-								.select()
-								.from(nib_purities)
-								.where(eq(nib_purities.name, rowData.nib.purityName))
-								.get()
-						: undefined;
+					// base_size/purity are exact-match-only lookup tables (never
+					// fuzzy-matched — see nib-parser.ts and the nib-value-
+					// lookup-tables-not-enums ADR), so a value nib-parser
+					// couldn't find gets created here, not merged/aliased —
+					// there's no candidate list to pick from, the raw text IS
+					// the correct value. This is why nib-parser flags them as
+					// needs_confirmation on the row (Ken reviews the row before
+					// it commits) rather than requiring a merge_into/alias_to-
+					// style decision that doesn't apply to this kind of table.
+					const baseSizeId = findOrCreateExactMatch(tx, nib_base_sizes, rowData.nib.baseSizeName);
+					const purityId = rowData.nib.purityName
+						? findOrCreateExactMatch(tx, nib_purities, rowData.nib.purityName)
+						: null;
+					// pointSize is never missing here — parseNibText only
+					// reaches 'parsed' after an exact seed-list match.
 					const pointSize = tx
 						.select()
 						.from(nib_point_sizes)
@@ -551,8 +592,8 @@ function runCommitTransaction(
 					const nib = create(tx, nibs, {
 						brand_id: null,
 						material_id: nibMaterialId,
-						purity_id: purity?.id ?? null,
-						base_size_id: baseSize!.id,
+						purity_id: purityId,
+						base_size_id: baseSizeId,
 						point_size_id: pointSize!.id,
 						shape_id: nibShapeId,
 						finish_id: nibFinishId,

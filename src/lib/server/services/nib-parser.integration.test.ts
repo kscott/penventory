@@ -98,6 +98,24 @@ describe('parseNibText', () => {
 		});
 	});
 
+	it('a dangling alias (canonical row no longer exists) is skipped, not matched — aliases.aliasable_id has no DB-level FK', () => {
+		// aliasable_id is intentionally unconstrained at the DB level for this
+		// polymorphic table (see schema.ts) — a row referencing a deleted or
+		// never-existing canonical id is a real, reachable case, not
+		// hypothetical. It must be skipped, not crash or false-match.
+		db.insert(aliases)
+			.values({ alias: 'Ghostwriter', aliasable_type: 'nib_shape', aliasable_id: 999999 })
+			.run();
+
+		const result = parseNibText(db, 'M Ghostwriter');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			shapeName: 'Round',
+			customName: 'Ghostwriter',
+			isCustomGrind: true
+		});
+	});
+
 	it('finish (plating color) is extracted separately from material — confirmed real case', () => {
 		db.insert(finishes).values({ name: 'Rose Gold' }).run();
 
@@ -110,9 +128,29 @@ describe('parseNibText', () => {
 		});
 	});
 
-	it('a malformed token that is a near-miss of a real point size is flagged, not guessed — the "sF" case', () => {
+	it('a malformed token with no exact point size match is flagged, not guessed — the "sF" case', () => {
+		// Confirmed via damerau-levenshtein directly: similarity("sf","f") is
+		// 0.5, below the 0.7 threshold — "sF" is NOT actually a near-miss by
+		// this function's own definition, it's just unrecognized. This still
+		// correctly lands in 'unparseable' (no exact match either), but via
+		// the generic "nothing found at all" reason, not the near-miss one —
+		// see the "XXF" case right below for what actually exercises that
+		// branch.
 		const result = parseNibText(db, 'sF');
-		expect(result.kind).toBe('unparseable');
+		expect(result).toMatchObject({
+			kind: 'unparseable',
+			reason: 'no point size found anywhere in the text'
+		});
+	});
+
+	it('a token that IS a genuine near-miss of a real point size gets the specific typo-flagged reason — "XXF" vs "XXXF"', () => {
+		// damerau-levenshtein("xxf","xxxf") = 0.75, clears the 0.7 threshold —
+		// a real dropped-letter typo of Extra-Extra-Extra-Fine.
+		const result = parseNibText(db, 'XXF');
+		expect(result).toMatchObject({
+			kind: 'unparseable',
+			reason: 'no exact point size match, but "XXF" is close to a known one — likely a typo'
+		});
 	});
 
 	it('a bare custom grind name with no point size anywhere is flagged, not defaulted', () => {

@@ -9,6 +9,7 @@ import { migrateDatabase } from '../db/migrate';
 import {
 	aliases,
 	brands,
+	filling_systems,
 	finishes,
 	import_attempts,
 	import_flagged_items,
@@ -16,9 +17,11 @@ import {
 	inks,
 	lines,
 	models,
+	nib_base_sizes,
 	nib_materials,
 	nib_shapes,
 	nibs,
+	pen_materials,
 	pen_nibs,
 	pens
 } from '../db/schema';
@@ -218,6 +221,88 @@ describe('fpc-import (parse + commit)', () => {
 
 			expect(flaggedItemsFor(attemptId)[0].flag_type).toBeNull();
 		});
+
+		it('flags a possible_duplicate against an already-committed catalog pen, not just within-batch', () => {
+			// loadExistingPenKeys/loadExistingInkKeys — every other duplicate
+			// test here uses two rows in the same batch; this is the "against
+			// whatever's already in the database" half of step 6's stated
+			// scope, exercised for the first time with a real existing row.
+			const brand = db.insert(brands).values({ name: 'Quietbrook' }).returning().get();
+			const material = db.insert(pen_materials).values({ name: 'Acrylic' }).returning().get();
+			const model = db
+				.insert(models)
+				.values({ brand_id: brand.id, name: 'Solstice' })
+				.returning()
+				.get();
+			const finish = db.insert(finishes).values({ name: 'Gold' }).returning().get();
+			const fillingSystem = db
+				.insert(filling_systems)
+				.values({ name: 'Cartridge/Converter' })
+				.returning()
+				.get();
+			db.insert(pens)
+				.values({
+					brand_id: brand.id,
+					model_id: model.id,
+					color: 'Harbor Blue',
+					material_id: material.id,
+					trim_color_id: finish.id,
+					filling_system_id: fillingSystem.id,
+					ownership_state: 'active'
+				})
+				.run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nullable-fields'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('possible_duplicate');
+			const candidateInfo = items[0].candidate_info as { matches: { matchType: string }[] };
+			expect(candidateInfo.matches[0].matchType).toBe('existing');
+		});
+
+		it('flags a possible_duplicate against an already-committed catalog ink, not just within-batch', () => {
+			const brand = db.insert(brands).values({ name: 'Quietbrook' }).returning().get();
+			db.insert(inks)
+				.values({
+					brand_id: brand.id,
+					name: 'Harbor Fog',
+					type: 'bottle',
+					color_fpc: '#5a6b73',
+					ownership_state: 'active'
+				})
+				.run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'blank-line')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('possible_duplicate');
+			const candidateInfo = items[0].candidate_info as { matches: { matchType: string }[] };
+			expect(candidateInfo.matches[0].matchType).toBe('existing');
+		});
+
+		it('a flag caused only by an unrecognized nib base_size/purity (no controlled-list field flagged) has decidedField null', () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-unrecognized-base-size'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('needs_confirmation');
+			const candidateInfo = items[0].candidate_info as {
+				fields: Record<string, unknown>;
+				nibValueFlags: { field: string; rawValue: string }[];
+				decidedField: string | null;
+			};
+			expect(candidateInfo.fields).toEqual({});
+			expect(candidateInfo.nibValueFlags).toEqual([{ field: 'nib_base_size', rawValue: '#7' }]);
+			expect(candidateInfo.decidedField).toBeNull();
+		});
 	});
 
 	describe('commit', () => {
@@ -232,6 +317,23 @@ describe('fpc-import (parse + commit)', () => {
 			);
 		});
 
+		it('refuses an attempt with zero rows — both CSVs empty', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+		});
+
+		it('refuses a nonexistent attempt id', async () => {
+			await expect(commitImportAttempt(db, sqlite, 999999, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+		});
+
 		it('takes a real backup before writing anything', async () => {
 			const { attemptId } = parseCatalogImport(db, {
 				pensCSV: fixture('pens', 'nullable-fields'),
@@ -242,6 +344,70 @@ describe('fpc-import (parse + commit)', () => {
 
 			expect(existsSync(backupDir)).toBe(true);
 			expect(readdirSync(backupDir).length).toBeGreaterThan(0);
+		});
+
+		it('commits a nib with an unrecognized base_size — creates the missing lookup row rather than crashing', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-unrecognized-base-size'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			decideAllClean(attemptId, 'import');
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.nibsCreated).toBe(1);
+
+			const nib = db.select().from(nibs).all()[0];
+			const baseSize = db
+				.select()
+				.from(nib_base_sizes)
+				.all()
+				.find((b) => b.id === nib.base_size_id);
+			expect(baseSize?.name).toBe('#7');
+		});
+
+		it('commits an archived pen as ownership_state = retired, with ownership_changed_on set', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'archived-retired-with-date'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const pen = db.select().from(pens).all()[0];
+			expect(pen.ownership_state).toBe('retired');
+			expect(pen.ownership_changed_on).not.toBeNull();
+		});
+
+		it('commits an archived pen with no Archived On date as ownership_changed_on = null, not a crash', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'archived-retired-no-date'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const pen = db.select().from(pens).all()[0];
+			expect(pen.ownership_state).toBe('retired');
+			expect(pen.ownership_changed_on).toBeNull();
+		});
+
+		it('commits an ink with a populated Maker, resolving maker_id separately from brand_id', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'with-maker')
+			});
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const ink = db.select().from(inks).all()[0];
+			expect(ink.maker_id).not.toBeNull();
+			expect(ink.maker_id).not.toBe(ink.brand_id);
+			const maker = db
+				.select()
+				.from(brands)
+				.all()
+				.find((b) => b.id === ink.maker_id);
+			expect(maker?.name).toBe('Riverstone');
 		});
 
 		it('commits a clean pen with a bare-point-size nib — Steel/#6/Round defaults, size_category/condition null', async () => {
@@ -556,6 +722,33 @@ describe('fpc-import (parse + commit)', () => {
 			expect(newItem.decision).toBeNull();
 		});
 
+		it('flags a new line ambiguity discovered only once brand context is known (ink-side counterpart), and refuses to commit', async () => {
+			const brand = db.insert(brands).values({ name: 'Thistlebrook' }).returning().get();
+			db.insert(lines).values({ brand_id: brand.id, name: 'Woodland' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'line-drift-after-brand-resolved')
+			});
+
+			const item = flaggedItemsFor(attemptId)[0];
+			db.update(import_flagged_items)
+				.set({ decision: 'merge_into', decision_target_id: brand.id, decided_at: new Date() })
+				.where(eq(import_flagged_items.id, item.id))
+				.run();
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+
+			expect(db.select().from(inks).all()).toEqual([]);
+			const items = flaggedItemsFor(attemptId);
+			expect(items).toHaveLength(2);
+			const newItem = items.find((i) => i.id !== item.id)!;
+			expect(newItem.flag_type).toBe('needs_confirmation');
+			expect(newItem.decision).toBeNull();
+		});
+
 		it('commits an ink with a real line, resolving/creating it under the brand', async () => {
 			// Seeded so brand resolves 'resolved' (not 'new') at parse time —
 			// only then does line resolution happen at parse rather than
@@ -615,6 +808,19 @@ describe('fpc-import (parse + commit)', () => {
 			const ink = db.select().from(inks).all()[0];
 			expect(ink.ownership_state).toBe('rehomed');
 			expect(ink.ownership_changed_on).not.toBeNull();
+		});
+
+		it('commits an archived ink with no Archived On date as ownership_changed_on = null, not a crash', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'archived-rehomed-no-date')
+			});
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const ink = db.select().from(inks).all()[0];
+			expect(ink.ownership_state).toBe('rehomed');
+			expect(ink.ownership_changed_on).toBeNull();
 		});
 
 		it('joins Comment and Private Comment into notes when both are present', async () => {
