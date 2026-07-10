@@ -100,7 +100,12 @@ Commit reads by attempt id and refuses if any flagged item still has `decision =
   a fake or in-memory substitute — this is the standard pattern across `resolveOrFlag`, the
   repository layer, and import service tests alike.
 - Vitest coverage gated at 90% minimum in CI, not just reported. See
-  [[docs/adr/2026-07-08-coverage-threshold-90-percent]].
+  [[docs/adr/2026-07-08-coverage-threshold-90-percent]]. That's the CI gate, not the actual bar —
+  every uncovered line in a coverage report gets read and either covered or given a specific,
+  written reason, never silently accepted because the aggregate percentage already cleared 90%.
+  Two real bugs (a non-functional existing-catalog duplicate check, a crash on an unrecognized nib
+  base size) were found exactly this way, not by "tests pass." See
+  [[docs/adr/2026-07-10-chase-coverage-gaps-to-100-percent]].
 - Fixture CSVs are many small, targeted files (one per condition), never one monolithic file.
 
 ## Migrations
