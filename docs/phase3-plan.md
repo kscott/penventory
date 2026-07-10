@@ -14,9 +14,16 @@ app, and the ink bulk-edit feature that directly targets FPC's worst pain point
    (routes), Playwright (form flow).
 
 2. **Pen CRUD** — same picker pattern. `size_category` / `condition` /
-   `accessories_note` fields. `ownership_state` filtering: default list view excludes
+   `accessories_note` fields. `size_category`/`condition` are nullable at the DB
+   level (Phase 1 step 6 — FPC's export never carries either), but the add-pen
+   form's Zod schema requires both: a human classifying a pen fresh should just do
+   it. Edit stays permissive — saving an unrelated change on an old imported pen
+   with either still null must not be blocked, per vision.md's no-nagging
+   principle; the field shows empty/fillable in the edit form, just not required
+   to submit. `ownership_state` filtering: default list view excludes
    retired/rehomed, an explicit toggle reveals them (never on by default).
-   *Gate:* same tiers; Playwright specifically covers the hidden-by-default behavior.
+   *Gate:* same tiers; Playwright specifically covers the hidden-by-default
+   behavior and the add-requires/edit-permissive split on size_category/condition.
 
 3. **Nib CRUD** — standalone entity, no originating pen required, per the vision
    doc's "nib can be purchased entirely on its own" requirement. Has the most
