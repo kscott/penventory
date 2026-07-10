@@ -102,6 +102,12 @@ Commit reads by attempt id and refuses if any flagged item still has `decision =
 - Vitest coverage gated at 90% minimum in CI, not just reported. See
   [[docs/adr/2026-07-08-coverage-threshold-90-percent]].
 - Fixture CSVs are many small, targeted files (one per condition), never one monolithic file.
+- Test files (`*.test.ts`, `*.integration.test.ts`) sit next to the source they test
+  (`src/lib/server/services/nib-parser.ts` / `nib-parser.integration.test.ts`), not in a mirrored
+  `tests/` tree — this is inherited from SvelteKit/Vite's default scaffolding and `vite.config.ts`'s
+  test `include` glob, never a deliberated project decision, and Ken's on record as not sold on it
+  (2026-07-10) — may change later. Fixture *data* (not test code) is the one thing already broken
+  out separately, under `tests/fixtures/`, since a CSV fixture belongs to no single source file.
 
 ## Migrations
 
