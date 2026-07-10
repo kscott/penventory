@@ -111,6 +111,17 @@ System` — every schema column with no safe default. `Nib` blank is a real, val
 Commit reads by attempt id and refuses if any item is undecided, including per-field. See
 [[docs/adr/2026-07-09-no-cli-at-all-for-import]].
 
+**A duplicate match, an unparseable nib, and a flagged field are independent signals — a row can
+trip more than one at once**, since duplicate detection runs on raw composite-key text
+(deliberately excluding `Nib`, which an already-committed pen has no raw text to reconstruct)
+while field resolution and nib parsing are separate mechanisms entirely. `flag_type` picks one
+"headline" reason for the review UI (`possible_duplicate` > `unparseable_nib` >
+`needs_confirmation`, most consequential first), but `candidate_info` always carries every signal
+that actually fired, and both `isItemFullyDecided` and commit's nib-reresolution path key off the
+row's actual content, never off `flag_type` alone — otherwise a duplicate-flagged row with a
+malformed `Nib` could commit silently with no nib and no error. See
+[[docs/adr/2026-07-10-flag-signals-are-not-mutually-exclusive]].
+
 ## Testing
 
 - No code path may require live external system state to be tested. If a dependency would

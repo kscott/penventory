@@ -52,6 +52,51 @@ describe('fpc-import (parse + commit)', () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
+	// Seeds a fully-resolved existing catalog pen — used by tests proving
+	// duplicate detection interacts correctly with other signals (brand
+	// ambiguity, unparseable nib) on the incoming row.
+	function seedExistingPen(
+		targetDb: typeof db,
+		fields: {
+			brand: string;
+			model: string;
+			color: string;
+			material: string;
+			trimColor: string;
+			fillingSystem: string;
+		}
+	) {
+		const brand = targetDb.insert(brands).values({ name: fields.brand }).returning().get();
+		const material = targetDb
+			.insert(pen_materials)
+			.values({ name: fields.material })
+			.returning()
+			.get();
+		const model = targetDb
+			.insert(models)
+			.values({ brand_id: brand.id, name: fields.model })
+			.returning()
+			.get();
+		const finish = targetDb.insert(finishes).values({ name: fields.trimColor }).returning().get();
+		const fillingSystem = targetDb
+			.insert(filling_systems)
+			.values({ name: fields.fillingSystem })
+			.returning()
+			.get();
+		targetDb
+			.insert(pens)
+			.values({
+				brand_id: brand.id,
+				model_id: model.id,
+				color: fields.color,
+				material_id: material.id,
+				trim_color_id: finish.id,
+				filling_system_id: fillingSystem.id,
+				ownership_state: 'active'
+			})
+			.run();
+	}
+
 	function flaggedItemsFor(attemptId: number) {
 		return db
 			.select()
@@ -256,7 +301,9 @@ describe('fpc-import (parse + commit)', () => {
 			const items = flaggedItemsFor(attemptId);
 			expect(items[0].flag_type).toBe('unparseable_nib');
 			expect(items[0].candidate_info).toEqual({
-				reason: 'no point size found anywhere in the text'
+				unparseableNibReason: 'no point size found anywhere in the text',
+				fields: {},
+				nibValueFlags: []
 			});
 		});
 
@@ -429,6 +476,41 @@ describe('fpc-import (parse + commit)', () => {
 			expect(items[0].flag_type).toBe('needs_confirmation');
 			const candidateInfo = items[0].candidate_info as { fields: Record<string, unknown> };
 			expect(Object.keys(candidateInfo.fields).sort()).toEqual(['brand', 'pen_material']);
+		});
+
+		it('a row that is both a possible_duplicate AND has an ambiguous Brand preserves both signals, not just the duplicate one', () => {
+			// Real scenario: composite-key duplicate detection runs on raw text,
+			// independent of resolveOrFlag — a row can simultaneously look like a
+			// near-dupe of an existing pen (Model/Color/Material/Trim all match)
+			// AND have a Brand value that's itself a typo needing its own
+			// decision. Confirmed bug (2026-07-10): determineFlag's if/else chain
+			// picked possible_duplicate and silently discarded the brand
+			// ambiguity — candidate_info had no `fields` key at all, so there was
+			// no way to even decide the brand in the review UI; commit would
+			// throw a confusing "still ambiguous, no recorded decision" error
+			// with nothing pointing back to what needed deciding.
+			seedExistingPen(db, {
+				brand: 'Wavecrest',
+				model: 'Drifter',
+				color: 'Slate',
+				material: 'Resin',
+				trimColor: 'Silver',
+				fillingSystem: 'Piston Filler'
+			});
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'brand-drift'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('possible_duplicate');
+			const candidateInfo = items[0].candidate_info as {
+				matches: { matchType: string }[];
+				fields: Record<string, unknown>;
+			};
+			expect(candidateInfo.matches.length).toBeGreaterThan(0);
+			expect(candidateInfo.fields.brand).toBeDefined();
 		});
 
 		it('tracks the source CSV line number on every row, 1-indexed including the header', () => {
@@ -693,6 +775,63 @@ describe('fpc-import (parse + commit)', () => {
 			expect(result.pensCreated).toBe(0);
 			expect(result.nibsCreated).toBe(0);
 			expect(db.select().from(pens).all()).toEqual([]);
+		});
+
+		it('a possible_duplicate row whose Nib is also unparseable refuses on import rather than silently committing without a nib — confirmed bug, 2026-07-10', async () => {
+			// Composite-key duplicate detection deliberately excludes Nib (see
+			// penCompositeKey), so a row can be an exact duplicate on every other
+			// field while its Nib text is independently malformed. Before the
+			// fix, determineFlag picked possible_duplicate and never re-checked
+			// the nib at commit (gated on flag_type === 'unparseable_nib', which
+			// this row never had) — deciding 'import' silently created the pen
+			// with zero nibs, no error, no re-flag. The nib data was just gone.
+			seedExistingPen(db, {
+				brand: 'Marrowgate',
+				model: 'Ledger',
+				color: 'Ink Black',
+				material: 'Ebonite',
+				trimColor: 'Ruthenium',
+				fillingSystem: 'Vacuum Filler'
+			});
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-malformed-token'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			expect(flaggedItemsFor(attemptId)[0].flag_type).toBe('possible_duplicate');
+			decideRow(flaggedItemsFor(attemptId)[0].id, 'import');
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				/still unparseable/
+			);
+			// The seeded existing pen is still there (untouched) — only the new
+			// import row failed to commit, and it failed loudly rather than
+			// silently landing without a nib.
+			expect(db.select().from(pens).all()).toHaveLength(1);
+			expect(db.select().from(nibs).all()).toEqual([]);
+		});
+
+		it('a possible_duplicate row whose Nib is also unparseable can be corrected via row_data.raw.Nib, then imports cleanly with the nib intact', async () => {
+			seedExistingPen(db, {
+				brand: 'Marrowgate',
+				model: 'Ledger',
+				color: 'Ink Black',
+				material: 'Ebonite',
+				trimColor: 'Ruthenium',
+				fillingSystem: 'Vacuum Filler'
+			});
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-malformed-token'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Nib', 'F');
+			decideRow(item.id, 'import');
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(1);
+			expect(result.nibsCreated).toBe(1);
 		});
 
 		it('a needs_confirmation flag on brand can be resolved via merge_into, reusing the existing id', async () => {

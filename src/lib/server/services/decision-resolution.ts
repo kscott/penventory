@@ -16,17 +16,38 @@ type Db = BetterSQLite3Database<typeof schema>;
 type TableWithId = AnySQLiteTable & { id: SQLiteColumn };
 type FlaggedItemRow = typeof import_flagged_items.$inferSelect;
 
-// The shape parseCatalogImport writes to candidate_info for a
-// needs_confirmation flag — see fpc-import.ts's determineFlag. No
-// "decidedField" — every key in `fields` and every entry in `nibValueFlags`
-// is independently decidable via field_decisions (see
+// The shape parseCatalogImport writes to candidate_info — see fpc-import.ts's
+// determineFlag. No "decidedField" — every key in `fields` and every entry in
+// `nibValueFlags` is independently decidable via field_decisions (see
 // docs/adr/2026-07-10-per-field-decisions-not-per-row.md). A row can have
 // more than one ambiguous field at once (e.g. a typo on Brand *and* on
 // Material) and each gets its own answer, not just the first one found.
-export type NeedsConfirmationCandidateInfo = {
+//
+// `matches`/`unparseableNibReason` can be present *alongside* `fields`/
+// `nibValueFlags` on the same row — a duplicate match and a field ambiguity
+// (or an unparseable nib) are independent signals that can both be true at
+// once (e.g. a row that's a near-dupe of an existing pen on Model/Color/
+// Material/Trim while its Brand is also a typo). flag_type picks one
+// "headline" reason for the review UI, but candidate_info always carries
+// every signal that actually fired — see
+// docs/adr/2026-07-10-flag-signals-are-not-mutually-exclusive.md. Before that
+// fix, determineFlag's if/else chain silently discarded whichever signal
+// wasn't the headline one.
+export type FlagCandidateInfo = {
+	matches?: {
+		matchType: 'existing' | 'batch';
+		id: number;
+		compositeKey: string;
+		similarity: number;
+	}[];
+	unparseableNibReason?: string;
 	fields: Record<string, ResolveResult>;
 	nibValueFlags: NibFieldFlag[];
 };
+
+// Old name, kept as an alias — every current usage already reads `.fields`/
+// `.nibValueFlags` the same way, so no call site needed to change.
+export type NeedsConfirmationCandidateInfo = FlagCandidateInfo;
 
 export type FieldDecisions = Record<
 	string,

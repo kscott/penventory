@@ -33,7 +33,7 @@ import {
 	findOrCreateExactMatchWithDecision,
 	settleField,
 	type FieldDecisions,
-	type NeedsConfirmationCandidateInfo
+	type FlagCandidateInfo
 } from './decision-resolution';
 import {
 	findDuplicateMatches,
@@ -295,27 +295,41 @@ function fieldsNeedingConfirmation(
 
 type Flag = { flagType: ImportFlagType; candidateInfo: Record<string, unknown> | null };
 
+// Duplicate match, unparseable nib, and controlled-list field ambiguity are
+// three *independent* signals — a row can trip more than one at once (a
+// near-dupe of an existing pen on Model/Color/Material/Trim while its Brand
+// is also a typo; a duplicate whose Nib text is separately malformed — Nib
+// isn't part of the composite key, so this is a real, reachable case). Every
+// signal that fires gets recorded in candidateInfo; flagType picks one
+// "headline" reason (duplicate > unparseable nib > needs_confirmation, in
+// order of how consequential getting it wrong is) for the review UI, but
+// nothing is ever silently dropped just because it wasn't the headline one.
+// See docs/adr/2026-07-10-flag-signals-are-not-mutually-exclusive.md — this
+// replaces an earlier if/else-if chain that returned as soon as the first
+// signal matched, discarding the rest.
 function determineFlag(
 	dupMatches: DuplicateMatch[],
 	nib: ParsedNibText | null,
 	flaggedFields: Record<string, ResolveResult>
 ): Flag | null {
-	if (dupMatches.length > 0) {
-		return { flagType: 'possible_duplicate', candidateInfo: { matches: dupMatches } };
-	}
-	if (nib?.kind === 'unparseable') {
-		return { flagType: 'unparseable_nib', candidateInfo: { reason: nib.reason } };
-	}
 	const nibValueFlags = nib?.kind === 'parsed' ? nib.flags : [];
-	if (Object.keys(flaggedFields).length > 0 || nibValueFlags.length > 0) {
-		// Every flagged field (there can be more than one — e.g. a typo on
-		// Brand *and* on Material at once) is independently decidable via
-		// field_decisions at commit — see docs/adr/2026-07-10-per-field-
-		// decisions-not-per-row.md. No single "decidedField" here anymore.
-		const info: NeedsConfirmationCandidateInfo = { fields: flaggedFields, nibValueFlags };
-		return { flagType: 'needs_confirmation', candidateInfo: info };
-	}
-	return null;
+	const hasDuplicate = dupMatches.length > 0;
+	const hasUnparseableNib = nib?.kind === 'unparseable';
+	const hasFieldAmbiguity = Object.keys(flaggedFields).length > 0 || nibValueFlags.length > 0;
+
+	if (!hasDuplicate && !hasUnparseableNib && !hasFieldAmbiguity) return null;
+
+	const info: FlagCandidateInfo = { fields: flaggedFields, nibValueFlags };
+	if (hasDuplicate) info.matches = dupMatches;
+	if (hasUnparseableNib) info.unparseableNibReason = nib.reason;
+
+	const flagType: ImportFlagType = hasDuplicate
+		? 'possible_duplicate'
+		: hasUnparseableNib
+			? 'unparseable_nib'
+			: 'needs_confirmation';
+
+	return { flagType, candidateInfo: info };
 }
 
 function writeFlaggedItem(db: Db, attemptId: number, rowData: RowData, flag: Flag | null) {
@@ -457,22 +471,34 @@ export type CommitResult = {
 	nibsCreated: number;
 };
 
-// Every ambiguous field named in candidate_info (fields + nibValueFlags)
-// must have its own entry in field_decisions before a needs_confirmation row
-// is considered decided — not just the first one found during parse. See
-// docs/adr/2026-07-10-per-field-decisions-not-per-row.md.
+// Two independent requirements, checked together rather than switched on a
+// single flag_type — a row can need both at once now that determineFlag no
+// longer collapses simultaneous signals into just one (see its comment):
+//   1. A row-level decision (import/skip) whenever flag_type is anything
+//      other than needs_confirmation — possible_duplicate, unparseable_nib,
+//      and unparseable_row are each a single judgment call by nature (see
+//      docs/adr/2026-07-10-per-field-decisions-not-per-row.md). A pure
+//      needs_confirmation row needs no row-level decision at all — the
+//      per-field decisions below are the whole answer.
+//   2. Every ambiguous field named in candidate_info (fields + nibValueFlags)
+//      has its own entry in field_decisions — not just the first one found
+//      during parse, and not just when flag_type happens to be
+//      needs_confirmation: a possible_duplicate or unparseable_nib row can
+//      carry field ambiguity too (see docs/adr/2026-07-10-flag-signals-are-
+//      not-mutually-exclusive.md).
 function isItemFullyDecided(item: FlaggedItemRow): boolean {
 	if (item.decision === 'skip') return true;
-	if (item.flag_type === 'needs_confirmation') {
-		const info = item.candidate_info as NeedsConfirmationCandidateInfo | null;
-		const requiredFields = [
-			...Object.keys(info?.fields ?? {}),
-			...(info?.nibValueFlags ?? []).map((f) => f.field)
-		];
-		const decisions = (item.field_decisions as FieldDecisions | null) ?? {};
-		return requiredFields.every((field) => decisions[field] !== undefined);
-	}
-	return item.decision !== null;
+
+	const requiresRowDecision = item.flag_type !== null && item.flag_type !== 'needs_confirmation';
+	if (requiresRowDecision && item.decision === null) return false;
+
+	const info = item.candidate_info as FlagCandidateInfo | null;
+	const requiredFields = [
+		...Object.keys(info?.fields ?? {}),
+		...(info?.nibValueFlags ?? []).map((f) => f.field)
+	];
+	const decisions = (item.field_decisions as FieldDecisions | null) ?? {};
+	return requiredFields.every((field) => decisions[field] !== undefined);
 }
 
 type PendingFlag = {
@@ -529,10 +555,21 @@ function resolveRowForCommit(
 		return newRowData;
 	}
 
-	if (rowData.entityType === 'pen' && item.flag_type === 'unparseable_nib') {
+	// Keyed off the row's actual nib data, not item.flag_type — a row whose
+	// Nib is unparseable can have flag_type === 'possible_duplicate' instead
+	// (duplicate is the headline signal; see determineFlag), since Nib isn't
+	// part of the composite key a duplicate match is found on. Gating this
+	// re-resolution on flag_type === 'unparseable_nib' alone missed that case
+	// entirely: deciding 'import' on such a row skipped nib re-resolution,
+	// and rowData.nib.kind stayed 'unparseable' straight through to
+	// runCommitTransaction's `if (rowData.nib.kind === 'parsed')` check,
+	// which silently skips nib creation — no error, no re-flag, the pen just
+	// committed with no nib at all. See
+	// docs/adr/2026-07-10-flag-signals-are-not-mutually-exclusive.md.
+	if (rowData.entityType === 'pen' && rowData.nib.kind === 'unparseable') {
 		if (item.decision !== 'import') {
 			throw new CommitRefusedError(
-				`row ${item.id} (line ${rowData.sourceLine}): unparseable_nib can only be 'import' (corrected, re-resolve) or 'skip'`
+				`row ${item.id} (line ${rowData.sourceLine}): a row with an unparseable Nib can only be 'import' (corrected, re-resolve) or 'skip'`
 			);
 		}
 		const nib = parseNibText(tx, rowData.raw.Nib);
