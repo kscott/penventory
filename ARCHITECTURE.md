@@ -68,7 +68,21 @@ alias string still refuses, with a clear error rather than a raw DB exception. S
 `nib_point_sizes` are real lookup tables (so adding a value is a data operation, not a deploy) but
 are resolved exact-match-only — deliberately excluded from fuzzy/alias treatment, since real data
 confirms values like "FM"/"MF"/"F/M" are genuinely distinct vendor conventions, not typos of each
-other. See [[docs/adr/2026-07-09-nib-value-lookup-tables-not-enums]].
+other. See [[docs/adr/2026-07-09-nib-value-lookup-tables-not-enums]]. Unlike base_size/purity,
+point_size has no "add new value" flagged pathway at all — an unrecognized point size is
+`unparseable_nib`, full stop; extending the seed set is a code+migration change (a hand-authored
+`--custom` migration, same as the original seed), not something Phase 1.1's review UI can do.
+
+**`nibs.brand_id` and `nibs.manufacturer_id` are two independent nullable FKs into `brands`, not
+one.** They represent genuinely different facts — who brands/sells/customizes a nib versus who
+physically manufactures the blank (JoWo, Bock, etc.) — and can be equal (a vertically-integrated
+maker like Pilot), different (a JoWo blank sold under Esterbrook), or either/both null (the common
+case). No constraint ties them together; the rule is "populate whichever you actually know," not
+"they must never match." A handful of point sizes are themselves a specific maker's proprietary
+design — Pilot's Signature/CM, Sailor's Zoom/Music — and `parseNibText` resolves brand+manufacturer
+(and, where the design isn't round, an implied shape) straight from the point-size code itself, via
+the same `resolveOrFlag('brand', ...)` pens' own `Brand` field already uses. See
+[[docs/adr/2026-07-13-nib-manufacturer-and-brand-are-independent-fields]].
 
 ## Computed values are never stored twice
 

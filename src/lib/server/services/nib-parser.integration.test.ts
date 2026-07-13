@@ -42,7 +42,9 @@ describe('parseNibText', () => {
 			finishName: null,
 			customName: null,
 			isCustomGrind: false,
-			flags: []
+			flags: [],
+			brandName: null,
+			manufacturerName: null
 		});
 	});
 
@@ -191,5 +193,118 @@ describe('parseNibText', () => {
 	it('a known base size does not flag', () => {
 		const result = parseNibText(db, 'M #6');
 		expect(result).toMatchObject({ kind: 'parsed', baseSizeName: '#6', flags: [] });
+	});
+
+	it('"Signature" is Pilot\'s own proprietary round nib — a real point size, not a custom grind', () => {
+		const result = parseNibText(db, 'Signature 14K');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			pointSize: 'Signature',
+			purityName: '14K',
+			shapeName: 'Round',
+			brandName: 'Pilot',
+			manufacturerName: 'Pilot',
+			customName: null,
+			isCustomGrind: false
+		});
+	});
+
+	it('"Zoom" is Sailor\'s own proprietary architect-style nib — implies Architect shape, not the Round default', () => {
+		const result = parseNibText(db, 'Zoom 21K');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			pointSize: 'Zoom',
+			shapeName: 'Architect',
+			brandName: 'Sailor',
+			manufacturerName: 'Sailor'
+		});
+	});
+
+	it('an explicit shape token still overrides "Zoom"\'s implied Architect default', () => {
+		db.insert(nib_shapes).values({ name: 'Cursive Italic' }).run();
+		const result = parseNibText(db, 'Zoom 21K Cursive Italic');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			pointSize: 'Zoom',
+			shapeName: 'Cursive Italic',
+			brandName: 'Sailor',
+			manufacturerName: 'Sailor'
+		});
+	});
+
+	it('"Music" is Sailor\'s own proprietary nib — round, no shape override needed', () => {
+		const result = parseNibText(db, 'Music 21K');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			pointSize: 'Music',
+			shapeName: 'Round',
+			brandName: 'Sailor',
+			manufacturerName: 'Sailor'
+		});
+	});
+
+	it('"C" (Coarse) is a real, generic vintage point size, not brand-specific — no maker implied', () => {
+		const result = parseNibText(db, 'C 14K');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			pointSize: 'C',
+			shapeName: 'Round',
+			brandName: null,
+			manufacturerName: null
+		});
+	});
+
+	it('a bare point size not in POINT_SIZE_MAKER has no brand/manufacturer implied', () => {
+		const result = parseNibText(db, 'B');
+		expect(result).toMatchObject({ brandName: null, manufacturerName: null });
+	});
+
+	it('"CM" is Pilot\'s own proprietary Calligraphy Medium — a 1mm stub, not round', () => {
+		const result = parseNibText(db, 'CM');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			pointSize: 'CM',
+			shapeName: 'Stub',
+			brandName: 'Pilot',
+			manufacturerName: 'Pilot'
+		});
+	});
+
+	it('"OM" decomposes into point size M and the Oblique shape — not its own atomic grade', () => {
+		const result = parseNibText(db, 'OM 14K');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			pointSize: 'M',
+			purityName: '14K',
+			shapeName: 'Oblique',
+			brandName: null,
+			manufacturerName: null,
+			customName: null,
+			isCustomGrind: false
+		});
+	});
+
+	it('the Oblique decomposition generalizes to any known width, not just M — "OBB"', () => {
+		const result = parseNibText(db, 'OBB 18K');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			pointSize: 'BB',
+			shapeName: 'Oblique'
+		});
+	});
+
+	it('an explicit shape token still overrides the Oblique decomposition', () => {
+		db.insert(nib_shapes).values({ name: 'Cursive Italic' }).run();
+		const result = parseNibText(db, 'OM Cursive Italic');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			pointSize: 'M',
+			shapeName: 'Cursive Italic'
+		});
+	});
+
+	it('a bare "O" alone is not treated as an Oblique-prefixed width — no known size remains after stripping it', () => {
+		const result = parseNibText(db, 'O');
+		expect(result.kind).toBe('unparseable');
 	});
 });

@@ -169,6 +169,14 @@ export type Level = (typeof LEVELS)[number];
 // (insert a row), not a code change + deploy.
 export const NIB_PURITY_SEED = ['9K', '14K', '18K', '21K', '22K'] as const;
 export const NIB_BASE_SIZE_SEED = ['#5', '#6', '#8'] as const;
+// 'OM' was originally seeded here but is deliberately absent now: it isn't
+// its own grade, it's the "Oblique" nib shape glued directly onto a width
+// code with no separating space ("OM" = Oblique + Medium) — unlike every
+// other shape word, which appears as its own separate token. Confirmed
+// universal (Ken, 2026-07-13): also seen combined with B/BB/BBB, not just M.
+// `parseNibText` strips a leading "O" off a token when the remainder is
+// itself a known point size and records "Oblique" as the shape, the same way
+// every other recognized shape word does — see nib-parser.ts.
 export const NIB_POINT_SIZE_SEED = [
 	'EF',
 	'F',
@@ -176,8 +184,8 @@ export const NIB_POINT_SIZE_SEED = [
 	'MF',
 	'F/M',
 	'M',
-	'OM',
 	'CM',
+	'C',
 	'B',
 	'BB',
 	'BBB',
@@ -185,7 +193,10 @@ export const NIB_POINT_SIZE_SEED = [
 	'1.0',
 	'1.1',
 	'1.4',
-	'1.5'
+	'1.5',
+	'Signature',
+	'Zoom',
+	'Music'
 ] as const;
 
 export const INK_TYPES = ['bottle', 'sample', 'cartridge'] as const;
@@ -253,16 +264,27 @@ export const nibPointSizeId = () => nib_point_sizes.id;
 
 // Standalone objects, owned independently of any pen — see pen_nibs below,
 // the join table that actually tracks which pen a nib is currently in, if
-// any. brand_id/purity_id/finish_id/nibmeister_id are nullable — real,
-// confirmed gaps: a bare point size in FPC's data ("F"/"M"/"B" alone) means
-// Steel + #6 housing + Round shape are assigned, but the manufacturer
-// genuinely isn't recorded (JoWo vs. Bock vs. other isn't knowable), and
-// Steel nibs have no karat purity at all. material_id/base_size_id/shape_id/
-// point_size_id stay required — the same bare-point-size case still assigns
-// all four.
+// any. brand_id/manufacturer_id/purity_id/finish_id/nibmeister_id are
+// nullable — real, confirmed gaps: a bare point size in FPC's data
+// ("F"/"M"/"B" alone) means Steel + #6 housing + Round shape are assigned,
+// but neither brand nor manufacturer is recorded, and Steel nibs have no
+// karat purity at all. material_id/base_size_id/shape_id/point_size_id stay
+// required — the same bare-point-size case still assigns all four.
+//
+// brand_id and manufacturer_id are deliberately two separate nullable FKs
+// into the same `brands` table, not one field: most third-party nib blanks
+// (JoWo, Bock, a couple others) get sold under a pen brand's own name and
+// sometimes customized further (e.g. a JoWo blank distributed and ground by
+// Esterbrook or Franklin-Christoph) — manufacturer and brand are genuinely
+// independent facts about the same physical nib, and Ken wants both
+// populated when both are known. No constraint ties them together: they can
+// be equal (a brand that makes its own nibs, e.g. Pilot), different, or
+// either/both null. See docs/adr/2026-07-13-nib-manufacturer-and-brand-are-
+// independent-fields.md.
 export const nibs = sqliteTable('nibs', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	brand_id: integer('brand_id').references(brandId),
+	manufacturer_id: integer('manufacturer_id').references(brandId),
 	material_id: integer('material_id').notNull().references(nibMaterialId),
 	purity_id: integer('purity_id').references(nibPurityId),
 	base_size_id: integer('base_size_id').notNull().references(nibBaseSizeId),

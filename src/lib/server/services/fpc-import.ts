@@ -92,6 +92,8 @@ type PenRowData = {
 	nibMaterial: ResolveResult | null;
 	nibShape: ResolveResult | null;
 	nibFinish: ResolveResult | null;
+	nibBrand: ResolveResult | null;
+	nibManufacturer: ResolveResult | null;
 };
 
 type InkRowData = {
@@ -288,6 +290,8 @@ type PenFieldResolution = {
 	nibMaterial: ResolveResult | null;
 	nibShape: ResolveResult | null;
 	nibFinish: ResolveResult | null;
+	nibBrand: ResolveResult | null;
+	nibManufacturer: ResolveResult | null;
 };
 
 function resolvePenFields(db: Db, raw: RawCsvRow): PenFieldResolution {
@@ -302,10 +306,14 @@ function resolvePenFields(db: Db, raw: RawCsvRow): PenFieldResolution {
 	let nibMaterial: ResolveResult | null = null;
 	let nibShape: ResolveResult | null = null;
 	let nibFinish: ResolveResult | null = null;
+	let nibBrand: ResolveResult | null = null;
+	let nibManufacturer: ResolveResult | null = null;
 	if (nib.kind === 'parsed') {
 		nibMaterial = resolveOrFlag(db, 'nib_material', nib.materialName);
 		nibShape = resolveOrFlag(db, 'nib_shape', nib.shapeName);
 		if (nib.finishName) nibFinish = resolveOrFlag(db, 'finish', nib.finishName);
+		if (nib.brandName) nibBrand = resolveOrFlag(db, 'brand', nib.brandName);
+		if (nib.manufacturerName) nibManufacturer = resolveOrFlag(db, 'brand', nib.manufacturerName);
 	}
 
 	return {
@@ -317,7 +325,9 @@ function resolvePenFields(db: Db, raw: RawCsvRow): PenFieldResolution {
 		nib,
 		nibMaterial,
 		nibShape,
-		nibFinish
+		nibFinish,
+		nibBrand,
+		nibManufacturer
 	};
 }
 
@@ -332,7 +342,11 @@ function penFlaggableResolutions(
 		{ field: 'filling_system', result: resolution.fillingSystem },
 		...(resolution.nibMaterial ? [{ field: 'nib_material', result: resolution.nibMaterial }] : []),
 		...(resolution.nibShape ? [{ field: 'nib_shape', result: resolution.nibShape }] : []),
-		...(resolution.nibFinish ? [{ field: 'nib_finish', result: resolution.nibFinish }] : [])
+		...(resolution.nibFinish ? [{ field: 'nib_finish', result: resolution.nibFinish }] : []),
+		...(resolution.nibBrand ? [{ field: 'nib_brand', result: resolution.nibBrand }] : []),
+		...(resolution.nibManufacturer
+			? [{ field: 'nib_manufacturer', result: resolution.nibManufacturer }]
+			: [])
 	];
 }
 
@@ -738,16 +752,30 @@ function resolveRowForCommit(
 		let nibMaterial: ResolveResult | null = null;
 		let nibShape: ResolveResult | null = null;
 		let nibFinish: ResolveResult | null = null;
+		let nibBrand: ResolveResult | null = null;
+		let nibManufacturer: ResolveResult | null = null;
 		if (nib.kind === 'parsed') {
 			nibMaterial = resolveOrFlag(tx, 'nib_material', nib.materialName);
 			nibShape = resolveOrFlag(tx, 'nib_shape', nib.shapeName);
 			if (nib.finishName) nibFinish = resolveOrFlag(tx, 'finish', nib.finishName);
+			if (nib.brandName) nibBrand = resolveOrFlag(tx, 'brand', nib.brandName);
+			if (nib.manufacturerName) nibManufacturer = resolveOrFlag(tx, 'brand', nib.manufacturerName);
 		}
-		const updatedRowData: PenRowData = { ...rowData, nib, nibMaterial, nibShape, nibFinish };
+		const updatedRowData: PenRowData = {
+			...rowData,
+			nib,
+			nibMaterial,
+			nibShape,
+			nibFinish,
+			nibBrand,
+			nibManufacturer
+		};
 		const flaggedFields = fieldsNeedingConfirmation([
 			...(nibMaterial ? [{ field: 'nib_material', result: nibMaterial }] : []),
 			...(nibShape ? [{ field: 'nib_shape', result: nibShape }] : []),
-			...(nibFinish ? [{ field: 'nib_finish', result: nibFinish }] : [])
+			...(nibFinish ? [{ field: 'nib_finish', result: nibFinish }] : []),
+			...(nibBrand ? [{ field: 'nib_brand', result: nibBrand }] : []),
+			...(nibManufacturer ? [{ field: 'nib_manufacturer', result: nibManufacturer }] : [])
 		]);
 		const flag = determineFlag([], nib, flaggedFields);
 		if (flag) {
@@ -1055,15 +1083,38 @@ function runCommitTransaction(
 						.where(eq(nib_point_sizes.name, rowData.nib.pointSize))
 						.get();
 
-					// brand_id is deliberately null here, always — FPC's Nib
-					// column never records the nib's manufacturer separately
-					// from the pen's own brand (confirmed: no such column
-					// exists in the real export), so reusing the pen's brandId
-					// would be a guess, not a fact. Same "genuinely not
-					// recorded" reasoning as the bare-point-size case, just
-					// applied uniformly rather than only to that one case.
+					// brand_id/manufacturer_id are null unless the point size
+					// itself is one of a vertically-integrated maker's own
+					// proprietary designs (Signature/CM = Pilot, Zoom/Music =
+					// Sailor) — FPC's Nib column never records this any other
+					// way, so reusing the pen's own brandId for a generic
+					// grade would still be a guess, not a fact. See
+					// docs/adr/2026-07-13-nib-manufacturer-and-brand-are-independent-fields.md.
+					const nibBrandId = rowData.nib.brandName
+						? applyDecision(
+								tx,
+								item,
+								'nib_brand',
+								'brand',
+								rowData.nib.brandName,
+								undefined,
+								brands
+							)
+						: null;
+					const nibManufacturerId = rowData.nib.manufacturerName
+						? applyDecision(
+								tx,
+								item,
+								'nib_manufacturer',
+								'brand',
+								rowData.nib.manufacturerName,
+								undefined,
+								brands
+							)
+						: null;
 					const nib = create(tx, nibs, {
-						brand_id: null,
+						brand_id: nibBrandId,
+						manufacturer_id: nibManufacturerId,
 						material_id: nibMaterialId,
 						purity_id: purityId,
 						base_size_id: baseSizeId,

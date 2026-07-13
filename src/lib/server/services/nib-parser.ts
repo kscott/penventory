@@ -33,7 +33,25 @@ export type ParsedNibText =
 			customName: string | null;
 			isCustomGrind: boolean;
 			flags: NibFieldFlag[];
+			brandName: string | null;
+			manufacturerName: string | null;
 	  };
+
+// A handful of point sizes are a specific vertically-integrated maker's own
+// proprietary nib design, not a generic width grade — confirmed against
+// Ken's real collection (2026-07-13): Pilot's Signature (round) and CM
+// ("Calligraphy Medium" — Stub-class, not round), Sailor's Zoom
+// (architect-style) and Music (round, 3-tine). brand and manufacturer are
+// the same maker for all four seen so far — see
+// docs/adr/2026-07-13-nib-manufacturer-and-brand-are-independent-fields.md.
+// `shape` overrides the Round default only when the maker's own design isn't
+// round (Zoom, CM); an explicit shape token in the text still wins over this.
+const POINT_SIZE_MAKER: Record<string, { brand: string; manufacturer: string; shape?: string }> = {
+	Signature: { brand: 'Pilot', manufacturer: 'Pilot' },
+	CM: { brand: 'Pilot', manufacturer: 'Pilot', shape: 'Stub' },
+	Zoom: { brand: 'Sailor', manufacturer: 'Sailor', shape: 'Architect' },
+	Music: { brand: 'Sailor', manufacturer: 'Sailor' }
+};
 
 // One phrase per candidate name (canonical or alias), longest-word-count
 // first — so "Cursive Smooth Italic" is tried before "Cursive Italic" before
@@ -109,9 +127,26 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 
 	let tokens = trimmed.split(/\s+/);
 
-	const pointSizeIndex = tokens.findIndex((t) =>
+	// "Oblique" is a real nib shape, but unlike every other shape word it's
+	// never written as its own separate token — it's glued directly onto a
+	// width code with no space ("OM" = Oblique + Medium; also seen combined
+	// with B/BB/BBB). Confirmed universal (Ken, 2026-07-13). Checked only
+	// after a direct match fails, so it can never shadow a genuine seeded
+	// code that happens to start with "O" (there isn't one today, but this
+	// keeps a direct match authoritative if one's ever added).
+	let pointSizeIndex = tokens.findIndex((t) =>
 		(NIB_POINT_SIZE_SEED as readonly string[]).includes(t)
 	);
+	let isOblique = false;
+	if (pointSizeIndex === -1) {
+		pointSizeIndex = tokens.findIndex(
+			(t) =>
+				t.length > 1 &&
+				t.startsWith('O') &&
+				(NIB_POINT_SIZE_SEED as readonly string[]).includes(t.slice(1))
+		);
+		isOblique = pointSizeIndex !== -1;
+	}
 	if (pointSizeIndex === -1) {
 		const nearMiss = tokens.find((t) =>
 			NIB_POINT_SIZE_SEED.some((size) => isNearDuplicate(t.toLowerCase(), size.toLowerCase()))
@@ -123,7 +158,7 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 				: 'no point size found anywhere in the text'
 		};
 	}
-	const pointSize = tokens[pointSizeIndex];
+	const pointSize = isOblique ? tokens[pointSizeIndex].slice(1) : tokens[pointSizeIndex];
 	tokens = [...tokens.slice(0, pointSizeIndex), ...tokens.slice(pointSizeIndex + 1)];
 
 	const flags: NibFieldFlag[] = [];
@@ -160,7 +195,8 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 	const finishMatch = extractPhrase(tokens, finishVocabulary);
 	if (finishMatch) tokens = finishMatch.remaining;
 
-	const shapeName = shapeMatch?.canonicalName ?? 'Round';
+	const maker = POINT_SIZE_MAKER[pointSize];
+	const shapeName = shapeMatch?.canonicalName ?? (isOblique ? 'Oblique' : maker?.shape) ?? 'Round';
 	const materialName = materialMatch?.canonicalName ?? (purityName ? 'Gold' : 'Steel');
 	const finishName = finishMatch?.canonicalName ?? null;
 
@@ -194,6 +230,8 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 		finishName,
 		customName,
 		isCustomGrind,
-		flags
+		flags,
+		brandName: maker?.brand ?? null,
+		manufacturerName: maker?.manufacturer ?? null
 	};
 }

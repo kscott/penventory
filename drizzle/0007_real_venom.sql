@@ -1,0 +1,1 @@
+ALTER TABLE `nibs` ADD `manufacturer_id` integer REFERENCES brands(id);

@@ -950,6 +950,70 @@ describe('fpc-import (parse + commit)', () => {
 			expect(nib.finish_id).not.toBeNull();
 		});
 
+		it('commits a maker-proprietary point size ("Zoom") with its own brand_id/manufacturer_id and implied shape, independent of the pen\'s own brand', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-maker-brand'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const pen = db.select().from(pens).all()[0];
+			const nib = db.select().from(nibs).all()[0];
+			const penBrand = db
+				.select()
+				.from(brands)
+				.all()
+				.find((b) => b.id === pen.brand_id);
+			const nibBrand = db
+				.select()
+				.from(brands)
+				.all()
+				.find((b) => b.id === nib.brand_id!);
+			const nibManufacturer = db
+				.select()
+				.from(brands)
+				.all()
+				.find((b) => b.id === nib.manufacturer_id!);
+			const shape = db
+				.select()
+				.from(nib_shapes)
+				.all()
+				.find((s) => s.id === nib.shape_id);
+
+			expect(penBrand?.name).toBe('Marrowgate');
+			expect(nibBrand?.name).toBe('Sailor');
+			expect(nibManufacturer?.name).toBe('Sailor');
+			expect(shape?.name).toBe('Architect');
+		});
+
+		it('an unparseable_nib corrected to a maker-proprietary point size resolves brand_id/manufacturer_id through the re-resolution path too', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-malformed-token'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Nib', 'Signature 14K');
+			decideRow(item.id, 'import');
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const nib = db.select().from(nibs).all()[0];
+			const nibBrand = db
+				.select()
+				.from(brands)
+				.all()
+				.find((b) => b.id === nib.brand_id!);
+			const nibManufacturer = db
+				.select()
+				.from(brands)
+				.all()
+				.find((b) => b.id === nib.manufacturer_id!);
+
+			expect(nibBrand?.name).toBe('Pilot');
+			expect(nibManufacturer?.name).toBe('Pilot');
+		});
+
 		it('an unparseable_nib row can be skipped, committing the pen without a nib', async () => {
 			const { attemptId } = parseCatalogImport(db, {
 				pensCSV: fixture('pens', 'nib-malformed-token'),

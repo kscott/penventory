@@ -231,6 +231,7 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 		function validValues(f: ReturnType<typeof seedControlledLists>) {
 			return {
 				brand_id: f.brand.id,
+				manufacturer_id: f.brand.id,
 				material_id: f.nibMaterial.id,
 				purity_id: f.purity.id,
 				base_size_id: f.baseSize.id,
@@ -247,7 +248,15 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 			expect(nib.id).toBeTypeOf('number');
 		});
 
-		it('accepts brand_id, purity_id, finish_id, and nibmeister_id all null', () => {
+		it('accepts brand_id and manufacturer_id pointing at the same brand row — a vertically-integrated maker (e.g. Pilot) is genuinely both', () => {
+			const f = seedControlledLists();
+			const nib = db.insert(nibs).values(validValues(f)).returning().get();
+
+			expect(nib.brand_id).toBe(f.brand.id);
+			expect(nib.manufacturer_id).toBe(f.brand.id);
+		});
+
+		it('accepts brand_id, manufacturer_id, purity_id, finish_id, and nibmeister_id all null', () => {
 			const f = seedControlledLists();
 			const nib = db
 				.insert(nibs)
@@ -261,6 +270,7 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 				.get();
 
 			expect(nib.brand_id).toBeNull();
+			expect(nib.manufacturer_id).toBeNull();
 			expect(nib.purity_id).toBeNull();
 			expect(nib.finish_id).toBeNull();
 			expect(nib.nibmeister_id).toBeNull();
@@ -268,6 +278,7 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 
 		it.each([
 			'brand_id',
+			'manufacturer_id',
 			'material_id',
 			'purity_id',
 			'base_size_id',
