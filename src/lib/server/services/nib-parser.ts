@@ -33,7 +33,86 @@ export type ParsedNibText =
 			customName: string | null;
 			isCustomGrind: boolean;
 			flags: NibFieldFlag[];
+			brandName: string | null;
+			manufacturerName: string | null;
+			nibmeisterName: string | null;
+			isFlex: boolean;
 	  };
+
+// A handful of point sizes are a specific vertically-integrated maker's own
+// proprietary nib design, not a generic width grade — confirmed against
+// Ken's real collection (2026-07-13): Pilot's Signature (round) and CM
+// ("Calligraphy Medium" — Stub-class, not round), Sailor's Zoom
+// (architect-style) and Music (round, 3-tine). brand and manufacturer are
+// the same maker for all four seen so far — see
+// docs/adr/2026-07-13-nib-manufacturer-and-brand-are-independent-fields.md.
+// `shape` overrides the Round default only when the maker's own design isn't
+// round (Zoom, CM); an explicit shape token in the text still wins over this.
+const POINT_SIZE_MAKER: Record<string, { brand: string; manufacturer: string; shape?: string }> = {
+	Signature: { brand: 'Pilot', manufacturer: 'Pilot' },
+	CM: { brand: 'Pilot', manufacturer: 'Pilot', shape: 'Stub' },
+	Zoom: { brand: 'Sailor', manufacturer: 'Sailor', shape: 'Architect' },
+	Music: { brand: 'Sailor', manufacturer: 'Sailor' }
+};
+
+// "Flex" is a real, confirmed case (Ken, 2026-07-13) where the point-size
+// *name* and a physical *behavior* collide in one word — Noodler's markets
+// "Flex" as the nib's own factory name/type (no separate width given at
+// all; the actual width isn't known and isn't worth chasing down for two
+// retired pens), and it also happens to actually flex. `nibs.is_flex`
+// captures the behavior; the name itself is just another point size, same
+// mechanism as Signature/Zoom/Music/CM, with no brand/manufacturer/shape
+// implied — nothing was said about who made these Konrad nibs beyond the
+// pen brand itself, and reusing the pen's own brand would be a guess.
+const POINT_SIZE_IS_FLEX = new Set(['Flex']);
+
+// Some shape words are themselves the name of a publicly-known, popularized
+// nibmeister grind — not a manufacturer's own stock shape, even though
+// (like any other shape word) they resolve via alias/exact-match to a
+// canonical nib_shapes entry. Confirmed public, industry-known terminology
+// popularized through Esterbrook (Ken, 2026-07-13): "Journaler" (Gena
+// Saloreno, implies Medium), "Scribe" (Joshua Lax, implies Broad),
+// "Imperial" (Kirk Speer — a Stub variant, half-round and flat on top,
+// distinct enough from plain Stub to be its own seeded shape rather than an
+// alias to it), and "Seagul" (Monty Winnfield — a stacked nib, any size
+// point). Imperial and Seagul have no implied point size of their own,
+// unlike Journaler/Scribe; bare text with no width given anywhere for
+// those two still correctly stays unparseable, needing a real correction,
+// not a guess. The nibmeister fact applies whenever the word appears at
+// all, not only when its point size is the implied one — "M Journaler" is
+// still Gena Saloreno's grind. Distinct from POINT_SIZE_MAKER's
+// manufacturer-branded point sizes (Signature/Zoom/Music/CM — a maker's own
+// stock design: brand_id/manufacturer_id set, never is_custom_grind): these
+// are a nibmeister's aftermarket modification of someone else's blank —
+// nibmeister_id set instead, is_custom_grind always true, brand_id/
+// manufacturer_id stay unknown/null.
+//
+// "Long Knife"/"Long Blade" (interchangeable, an Architect-type shape) are
+// deliberately absent here — no nibmeister was named for these, so they're
+// just an ordinary seeded shape (see NIB_SHAPE_SEED), not a nibmeister
+// grind: no forced is_custom_grind, no nibmeister_id. They already require
+// an explicit point size by default, same as any other shape word not
+// listed in this map — no special-case code needed for that half.
+const NIBMEISTER_GRIND: Record<string, { impliedPointSize?: string; nibmeister: string }> = {
+	Journaler: { impliedPointSize: 'M', nibmeister: 'Gena Saloreno' },
+	Scribe: { impliedPointSize: 'B', nibmeister: 'Joshua Lax' },
+	Imperial: { nibmeister: 'Kirk Speer' },
+	Seagul: { nibmeister: 'Monty Winnfield' }
+};
+
+// A word left over after point size/shape/material/finish are all otherwise
+// extracted can itself be a real nib brand — a pen from one brand can come
+// with a nib branded by a completely different one. Confirmed real case
+// (Ken, 2026-07-13): "F Hongdian" is a Hongdian-branded nib on a
+// different-brand pen body, not a custom grind description. Distinct from
+// POINT_SIZE_MAKER (keyed by the point size itself) and NIBMEISTER_GRIND
+// (keyed by a shape word) — this is keyed by whatever's left over once
+// everything else has already been resolved. manufacturer stays
+// unspecified (null) here — nothing confirms Hongdian makes its own nibs
+// in-house the way Pilot/Sailor do; only the brand fact is known.
+const LEFTOVER_BRAND_WORD: Record<string, string> = {
+	Hongdian: 'Hongdian'
+};
 
 // One phrase per candidate name (canonical or alias), longest-word-count
 // first — so "Cursive Smooth Italic" is tried before "Cursive Italic" before
@@ -92,8 +171,57 @@ function extractPhrase(
 	return null;
 }
 
+type Category = 'shape' | 'material' | 'finish';
+
+// Shape/material/finish are extracted together, longest phrase first across
+// all three vocabularies at once — not as three separate sequential passes
+// (shape, then material, then finish). A sequential pass lets a shorter
+// phrase from an earlier category steal a word that would otherwise form a
+// longer, more specific phrase in a later category: with "Gold" seeded as a
+// nib_material, a strictly-sequential material pass matches "Gold" inside
+// "Rose Gold" before the finish pass ever runs, leaving "Rose" as orphaned
+// leftover text and silently dropping the real finish. Confirmed reachable
+// with real data, not hypothetical: any bare-purity nib ("B 18K") defaults
+// materialName to "Gold", which becomes a real nib_materials row on first
+// commit — every later "Rose Gold" finish would break the same way.
+function extractCategorizedPhrases(
+	tokens: string[],
+	vocabularies: Record<Category, Phrase[]>
+): {
+	tokens: string[];
+	matches: Record<Category, string | null>;
+} {
+	const combined = (
+		[
+			...vocabularies.shape.map((p) => ({ ...p, category: 'shape' as const })),
+			...vocabularies.material.map((p) => ({ ...p, category: 'material' as const })),
+			...vocabularies.finish.map((p) => ({ ...p, category: 'finish' as const }))
+		] as (Phrase & { category: Category })[]
+	).sort((a, b) => b.words.length - a.words.length);
+
+	let remaining = tokens;
+	const matches: Record<Category, string | null> = { shape: null, material: null, finish: null };
+	for (const phrase of combined) {
+		if (matches[phrase.category]) continue;
+		const match = extractPhrase(remaining, [phrase]);
+		if (!match) continue;
+		remaining = match.remaining;
+		matches[phrase.category] = match.canonicalName;
+	}
+	return { tokens: remaining, matches };
+}
+
 function findExactName(db: Db, table: typeof nib_base_sizes | typeof nib_purities, name: string) {
 	return db.select().from(table).where(eq(table.name, name)).get();
+}
+
+// Matched case-insensitively but always returns the seed's own canonical
+// casing — matching insensitive, recording canonical, never whatever casing
+// the raw text happened to use (Ken, 2026-07-13).
+function findCanonicalPointSize(raw: string): string | undefined {
+	return (NIB_POINT_SIZE_SEED as readonly string[]).find(
+		(size) => size.toLowerCase() === raw.toLowerCase()
+	);
 }
 
 // Confirmed against Ken's real FPC export — see phase1-plan.md step 6 and the
@@ -109,10 +237,43 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 
 	let tokens = trimmed.split(/\s+/);
 
-	const pointSizeIndex = tokens.findIndex((t) =>
-		(NIB_POINT_SIZE_SEED as readonly string[]).includes(t)
+	// Checked up front, against the original token list — a nibmeister grind
+	// word's nibmeister fact applies whenever it appears at all, whether or
+	// not its own point size happens to be given explicitly elsewhere
+	// ("M Journaler" is still Gena Saloreno's grind, not just bare
+	// "Journaler"). See NIBMEISTER_GRIND above.
+	const nibmeisterEntry = Object.entries(NIBMEISTER_GRIND).find(([shape]) =>
+		tokens.some((t) => t.toLowerCase() === shape.toLowerCase())
 	);
+	const nibmeisterName = nibmeisterEntry?.[1].nibmeister ?? null;
+
+	// "Oblique" is a real nib shape, but unlike every other shape word it's
+	// never written as its own separate token — it's glued directly onto a
+	// width code with no space ("OM" = Oblique + Medium; also seen combined
+	// with B/BB/BBB). Confirmed universal (Ken, 2026-07-13). Checked only
+	// after a direct match fails, so it can never shadow a genuine seeded
+	// code that happens to start with "O" (there isn't one today, but this
+	// keeps a direct match authoritative if one's ever added).
+	let pointSizeIndex = tokens.findIndex((t) => findCanonicalPointSize(t) !== undefined);
+	let isOblique = false;
 	if (pointSizeIndex === -1) {
+		pointSizeIndex = tokens.findIndex(
+			(t) =>
+				t.length > 1 &&
+				t[0].toLowerCase() === 'o' &&
+				findCanonicalPointSize(t.slice(1)) !== undefined
+		);
+		isOblique = pointSizeIndex !== -1;
+	}
+	// A nibmeister grind word carries its own implied point size, by
+	// definition, when no separate width is given anywhere in the text.
+	// Checked only after both real point-size checks above fail, and
+	// doesn't consume the token — it's left in place so the shape-matching
+	// step below still finds and resolves it via alias/exact-match, the
+	// same as when a width is given explicitly.
+	const impliedPointSize =
+		pointSizeIndex === -1 ? (nibmeisterEntry?.[1].impliedPointSize ?? null) : null;
+	if (pointSizeIndex === -1 && !impliedPointSize) {
 		const nearMiss = tokens.find((t) =>
 			NIB_POINT_SIZE_SEED.some((size) => isNearDuplicate(t.toLowerCase(), size.toLowerCase()))
 		);
@@ -123,8 +284,16 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 				: 'no point size found anywhere in the text'
 		};
 	}
-	const pointSize = tokens[pointSizeIndex];
-	tokens = [...tokens.slice(0, pointSizeIndex), ...tokens.slice(pointSizeIndex + 1)];
+	let pointSize: string;
+	if (pointSizeIndex === -1) {
+		// impliedPointSize — no token to remove; the shape word that implied
+		// it stays in tokens for the shape-matching step below.
+		pointSize = impliedPointSize!;
+	} else {
+		const rawMatch = isOblique ? tokens[pointSizeIndex].slice(1) : tokens[pointSizeIndex];
+		pointSize = findCanonicalPointSize(rawMatch)!;
+		tokens = [...tokens.slice(0, pointSizeIndex), ...tokens.slice(pointSizeIndex + 1)];
+	}
 
 	const flags: NibFieldFlag[] = [];
 
@@ -149,39 +318,50 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 	}
 
 	const shapeVocabulary = loadVocabulary(db, nib_shapes, 'nib_shape');
-	const shapeMatch = extractPhrase(tokens, shapeVocabulary);
-	if (shapeMatch) tokens = shapeMatch.remaining;
-
 	const materialVocabulary = loadVocabulary(db, nib_materials, 'nib_material');
-	const materialMatch = extractPhrase(tokens, materialVocabulary);
-	if (materialMatch) tokens = materialMatch.remaining;
-
 	const finishVocabulary = loadVocabulary(db, finishes, 'finish');
-	const finishMatch = extractPhrase(tokens, finishVocabulary);
-	if (finishMatch) tokens = finishMatch.remaining;
+	const extracted = extractCategorizedPhrases(tokens, {
+		shape: shapeVocabulary,
+		material: materialVocabulary,
+		finish: finishVocabulary
+	});
+	tokens = extracted.tokens;
 
-	const shapeName = shapeMatch?.canonicalName ?? 'Round';
-	const materialName = materialMatch?.canonicalName ?? (purityName ? 'Gold' : 'Steel');
-	const finishName = finishMatch?.canonicalName ?? null;
+	const maker = POINT_SIZE_MAKER[pointSize];
+	const shapeName = extracted.matches.shape ?? (isOblique ? 'Oblique' : maker?.shape) ?? 'Round';
+	const materialName = extracted.matches.material ?? (purityName ? 'Gold' : 'Steel');
+	const finishName = extracted.matches.finish ?? null;
 
 	let customName: string | null = null;
-	let isCustomGrind = false;
+	let leftoverBrandName: string | null = null;
+	// A nibmeister grind is always a custom grind, even though its shape
+	// resolves via known vocabulary just like a manufacturer's stock
+	// shape — it's still an aftermarket modification, not how the nib
+	// came from the factory.
+	let isCustomGrind = nibmeisterName !== null;
 	if (tokens.length > 0) {
 		const leftover = tokens.join(' ');
-		const allKnownNames = [...shapeVocabulary, ...materialVocabulary, ...finishVocabulary].map(
-			(p) => p.words.join(' ')
+		const brandEntry = Object.entries(LEFTOVER_BRAND_WORD).find(
+			([word]) => word.toLowerCase() === leftover.toLowerCase()
 		);
-		const looksLikeATypo = allKnownNames.some((name) =>
-			isNearDuplicate(leftover.toLowerCase(), name.toLowerCase())
-		);
-		if (looksLikeATypo) {
-			return {
-				kind: 'unparseable',
-				reason: `"${leftover}" is close to a known nib shape/material/finish but doesn't match exactly — likely a typo`
-			};
+		if (brandEntry) {
+			leftoverBrandName = brandEntry[1];
+		} else {
+			const allKnownNames = [...shapeVocabulary, ...materialVocabulary, ...finishVocabulary].map(
+				(p) => p.words.join(' ')
+			);
+			const looksLikeATypo = allKnownNames.some((name) =>
+				isNearDuplicate(leftover.toLowerCase(), name.toLowerCase())
+			);
+			if (looksLikeATypo) {
+				return {
+					kind: 'unparseable',
+					reason: `"${leftover}" is close to a known nib shape/material/finish but doesn't match exactly — likely a typo`
+				};
+			}
+			customName = leftover;
+			isCustomGrind = true;
 		}
-		customName = leftover;
-		isCustomGrind = true;
 	}
 
 	return {
@@ -194,6 +374,10 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 		finishName,
 		customName,
 		isCustomGrind,
-		flags
+		flags,
+		brandName: maker?.brand ?? leftoverBrandName,
+		manufacturerName: maker?.manufacturer ?? null,
+		nibmeisterName,
+		isFlex: POINT_SIZE_IS_FLEX.has(pointSize)
 	};
 }

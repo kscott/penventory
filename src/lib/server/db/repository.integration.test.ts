@@ -51,8 +51,14 @@ describe('repository (create / getById / listAll)', () => {
 		const penMaterial = create(db, pen_materials, { name: 'Acrylic' });
 		const finish = create(db, finishes, { name: 'Rhodium' });
 		const fillingSystem = create(db, filling_systems, { name: 'Piston' });
-		const nibMaterial = create(db, nib_materials, { name: 'Gold' });
-		const nibShape = create(db, nib_shapes, { name: 'Round' });
+		// Gold/Round are pre-seeded by migration now — select rather than
+		// create, same pattern as purity/baseSize/pointSize below.
+		const nibMaterial = db
+			.select()
+			.from(nib_materials)
+			.where(eq(nib_materials.name, 'Gold'))
+			.get()!;
+		const nibShape = db.select().from(nib_shapes).where(eq(nib_shapes.name, 'Round')).get()!;
 		const vendor = create(db, vendors, { name: 'PenRealm' });
 		const purity = db.select().from(nib_purities).where(eq(nib_purities.name, '14K')).get()!;
 		const baseSize = db.select().from(nib_base_sizes).where(eq(nib_base_sizes.name, '#6')).get()!;

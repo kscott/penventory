@@ -30,3 +30,7 @@ vite.config.ts.timestamp-*
 *.db
 *.db-wal
 *.db-shm
+
+# Claude Code working notes — session-continuity scratch files, not project
+# docs. Never committed; docs/ + GitHub issues stay the source of truth.
+/.claude/scratch/

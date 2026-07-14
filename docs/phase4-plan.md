@@ -125,6 +125,25 @@ the two dashboard views the vision doc confirmed as worth keeping.
    Inked/Date Cleaned, `ended_on` null where FPC shows no cleaning date — i.e. still
    loaded).
 
+   **Same rigor standard as Phase 1 step 6's completeness review (2026-07-10,
+   [[docs/adr/2026-07-10-chase-coverage-gaps-to-100-percent]]), not a lighter pass
+   because it's "just" a follow-on import:** every CSV column gets its own field-by-
+   field test walkthrough (not just the ones obviously central to matching), then a
+   separate pass for interactions between fields, then chase coverage to 100% and
+   read every uncovered line individually rather than accepting the aggregate
+   percentage. That review caught two live bugs in step 6 that "tests pass, coverage
+   above 90%" had completely masked — assume this import has equivalent-severity bugs
+   until proven otherwise by the same process, not by inspection.
+   Also resolve here, not by assumption: whether `collected_pens.csv`/
+   `collected_inks.csv`'s own `Usage`/`Daily Usage`/`Last Inked`/`Last Cleaned`/
+   `Last Used`/`Inked` columns (ignored by Phase 1 step 6 — see its field-by-field
+   review) are meant to stay **permanently** ignored because Penventory recomputes
+   equivalent values live from the by-then-real `inkings` table (matching the
+   "computed values are never stored twice" principle in `ARCHITECTURE.md`), or
+   whether they're a distinct, not-yet-designed import need of their own separate
+   from `currently_inked.csv`. Not yet decided either way — flagged so it isn't
+   silently assumed one way or the other when this phase starts.
+
 6. **Observations.** Standalone dated notes for pen/nib, independent of any active
    inking (e.g. "became my desk pen," a condition note).
    *Gate:* same tiers, smaller slice.

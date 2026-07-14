@@ -1,13 +1,21 @@
 import { sql } from 'drizzle-orm';
 import { integer, primaryKey, sqliteTable, text, unique } from 'drizzle-orm/sqlite-core';
 
+// unixepoch(), not CURRENT_TIMESTAMP — CURRENT_TIMESTAMP produces SQLite's
+// human-readable TEXT format ('2026-07-10 21:32:54'), but these columns are
+// `integer(..., { mode: 'timestamp' })`, which expects a unix epoch integer.
+// A default-populated timestamp (never explicitly set — updated_at, always;
+// created_at on every row not created via an explicit created_at like
+// import does) silently became an Invalid Date on every read. Found via a
+// test that actually called .getTime() on one instead of just
+// .not.toBeNull() — see docs/adr/2026-07-10-timestamp-default-was-invalid-date.md.
 const timestamps = {
 	created_at: integer('created_at', { mode: 'timestamp' })
 		.notNull()
-		.default(sql`(CURRENT_TIMESTAMP)`),
+		.default(sql`(unixepoch())`),
 	updated_at: integer('updated_at', { mode: 'timestamp' })
 		.notNull()
-		.default(sql`(CURRENT_TIMESTAMP)`)
+		.default(sql`(unixepoch())`)
 };
 
 // --- Controlled lists (unscoped) --------------------------------------------
@@ -161,6 +169,14 @@ export type Level = (typeof LEVELS)[number];
 // (insert a row), not a code change + deploy.
 export const NIB_PURITY_SEED = ['9K', '14K', '18K', '21K', '22K'] as const;
 export const NIB_BASE_SIZE_SEED = ['#5', '#6', '#8'] as const;
+// 'OM' was originally seeded here but is deliberately absent now: it isn't
+// its own grade, it's the "Oblique" nib shape glued directly onto a width
+// code with no separating space ("OM" = Oblique + Medium) — unlike every
+// other shape word, which appears as its own separate token. Confirmed
+// universal (Ken, 2026-07-13): also seen combined with B/BB/BBB, not just M.
+// `parseNibText` strips a leading "O" off a token when the remainder is
+// itself a known point size and records "Oblique" as the shape, the same way
+// every other recognized shape word does — see nib-parser.ts.
 export const NIB_POINT_SIZE_SEED = [
 	'EF',
 	'F',
@@ -168,8 +184,8 @@ export const NIB_POINT_SIZE_SEED = [
 	'MF',
 	'F/M',
 	'M',
-	'OM',
 	'CM',
+	'C',
 	'B',
 	'BB',
 	'BBB',
@@ -177,7 +193,67 @@ export const NIB_POINT_SIZE_SEED = [
 	'1.0',
 	'1.1',
 	'1.4',
-	'1.5'
+	'1.5',
+	'Signature',
+	'Zoom',
+	'Music',
+	'Flex'
+] as const;
+
+// Seed values for nib_shapes/nib_materials (and the finish-tone slice of
+// finishes below) — unlike NIB_*_SEED above, these tables are ordinary
+// resolveOrFlag-style controlled lists (fuzzy/alias, open-ended), not
+// exact-match-only, so this isn't a gate parseNibText checks against. It
+// exists so a genuinely new word is never seen for the *first* time by a
+// completely empty vocabulary: parseNibText does its own phrase-matching
+// against these tables before a value ever reaches resolveOrFlag, so an
+// unmatched word silently becomes custom_name with a defaulted material/
+// shape instead of ever being offered as a "new value" candidate — see
+// docs/adr/2026-07-13-nib-manufacturer-and-brand-are-independent-fields.md.
+// Seeded from what's already confirmed in Ken's real collected_pens.csv;
+// the migration's own hand-authored INSERTs are the actual source of
+// truth for the DB rows, this is kept in sync by hand and verified by a
+// test, same pattern as NIB_POINT_SIZE_SEED.
+export const NIB_SHAPE_SEED = [
+	'Round',
+	'Stub',
+	'Cursive Italic',
+	'Cursive Smooth Italic',
+	'Architect',
+	'Italic',
+	'Oblique',
+	'Scribe',
+	'Imperial',
+	'Seagull',
+	'Long Knife'
+] as const;
+export const NIB_MATERIAL_SEED = ['Steel', 'Gold', 'Titanium'] as const;
+// Gold/Silver are intentionally absent as canonical names — Ken's real trim
+// colors describe plating *tone*, not composition (that's tracked
+// separately on pens.material_id, e.g. "Sterling Silver"), so the canonical
+// rows are "Gold Tone"/"Silver Tone" with "Gold"/"Silver" as raw-text
+// aliases. Copper/Bronze are deliberately literal, unaliased — Ken has a
+// couple of pens with genuine copper-metal trim mixed in among copper-toned
+// ones, indistinguishable from the raw text alone.
+export const FINISH_SEED = [
+	'Black',
+	'Rose Gold',
+	'Ruthenium',
+	'Gunmetal',
+	'Bronze',
+	'Copper',
+	'Blue',
+	'Brown',
+	'Clear',
+	'Raven',
+	'Stainless Steel',
+	'Titanium',
+	'Black/Gunmetal',
+	'Black/silver',
+	'Copper/Gold',
+	'Gold/Brass',
+	'Gold Tone',
+	'Silver Tone'
 ] as const;
 
 export const INK_TYPES = ['bottle', 'sample', 'cartridge'] as const;
@@ -195,7 +271,10 @@ export const pens = sqliteTable('pens', {
 	model_id: integer('model_id').notNull().references(modelId),
 	color: text('color').notNull(),
 	material_id: integer('material_id').notNull().references(penMaterialId),
-	trim_color_id: integer('trim_color_id').notNull().references(finishId),
+	// Nullable — real, confirmed case: some pens have no plated trim hardware
+	// at all (plain/unadorned body, just a nib), not a data-entry gap. Same
+	// reasoning as nibs.brand_id/finish_id below.
+	trim_color_id: integer('trim_color_id').references(finishId),
 	filling_system_id: integer('filling_system_id').notNull().references(fillingSystemId),
 	// Nullable — FPC's export tracks neither at all; import (Phase 1 step 6) leaves
 	// both unset rather than writing a guessed default, same pattern as
@@ -242,16 +321,27 @@ export const nibPointSizeId = () => nib_point_sizes.id;
 
 // Standalone objects, owned independently of any pen — see pen_nibs below,
 // the join table that actually tracks which pen a nib is currently in, if
-// any. brand_id/purity_id/finish_id/nibmeister_id are nullable — real,
-// confirmed gaps: a bare point size in FPC's data ("F"/"M"/"B" alone) means
-// Steel + #6 housing + Round shape are assigned, but the manufacturer
-// genuinely isn't recorded (JoWo vs. Bock vs. other isn't knowable), and
-// Steel nibs have no karat purity at all. material_id/base_size_id/shape_id/
-// point_size_id stay required — the same bare-point-size case still assigns
-// all four.
+// any. brand_id/manufacturer_id/purity_id/finish_id/nibmeister_id are
+// nullable — real, confirmed gaps: a bare point size in FPC's data
+// ("F"/"M"/"B" alone) means Steel + #6 housing + Round shape are assigned,
+// but neither brand nor manufacturer is recorded, and Steel nibs have no
+// karat purity at all. material_id/base_size_id/shape_id/point_size_id stay
+// required — the same bare-point-size case still assigns all four.
+//
+// brand_id and manufacturer_id are deliberately two separate nullable FKs
+// into the same `brands` table, not one field: most third-party nib blanks
+// (JoWo, Bock, a couple others) get sold under a pen brand's own name and
+// sometimes customized further (e.g. a JoWo blank distributed and ground by
+// Esterbrook or Franklin-Christoph) — manufacturer and brand are genuinely
+// independent facts about the same physical nib, and Ken wants both
+// populated when both are known. No constraint ties them together: they can
+// be equal (a brand that makes its own nibs, e.g. Pilot), different, or
+// either/both null. See docs/adr/2026-07-13-nib-manufacturer-and-brand-are-
+// independent-fields.md.
 export const nibs = sqliteTable('nibs', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	brand_id: integer('brand_id').references(brandId),
+	manufacturer_id: integer('manufacturer_id').references(brandId),
 	material_id: integer('material_id').notNull().references(nibMaterialId),
 	purity_id: integer('purity_id').references(nibPurityId),
 	base_size_id: integer('base_size_id').notNull().references(nibBaseSizeId),
@@ -260,6 +350,14 @@ export const nibs = sqliteTable('nibs', {
 	finish_id: integer('finish_id').references(finishId),
 	custom_name: text('custom_name'),
 	is_custom_grind: integer('is_custom_grind', { mode: 'boolean' }).notNull().default(false),
+	// A physical characteristic, independent of custom_name/is_custom_grind —
+	// confirmed real, factory case (Ken, 2026-07-13): Noodler's markets
+	// "Flex" as the nib's own factory name/type (FPC's Nib column is
+	// literally just "Flex", no separate width given), which also happens to
+	// describe the nib's actual flex behavior. Distinct concepts that happen
+	// to collide in that one word: is_flex captures the behavior, independent
+	// of whatever the nib's name/shape/grind turns out to be.
+	is_flex: integer('is_flex', { mode: 'boolean' }).notNull().default(false),
 	grind_description: text('grind_description'),
 	nibmeister_id: integer('nibmeister_id').references(vendorId),
 	ground_on: integer('ground_on', { mode: 'timestamp' }),
@@ -359,7 +457,7 @@ export const import_runs = sqliteTable('import_runs', {
 	report_summary: text('report_summary', { mode: 'json' }).$type<Record<string, unknown>>(),
 	run_at: integer('run_at', { mode: 'timestamp' })
 		.notNull()
-		.default(sql`(CURRENT_TIMESTAMP)`)
+		.default(sql`(unixepoch())`)
 });
 
 // --- Import working state: import_attempts + import_flagged_items ----------
@@ -378,7 +476,7 @@ export const import_attempts = sqliteTable('import_attempts', {
 	status: text('status', { enum: IMPORT_ATTEMPT_STATUSES }).notNull().default('open'),
 	created_at: integer('created_at', { mode: 'timestamp' })
 		.notNull()
-		.default(sql`(CURRENT_TIMESTAMP)`),
+		.default(sql`(unixepoch())`),
 	committed_at: integer('committed_at', { mode: 'timestamp' })
 });
 
@@ -390,10 +488,13 @@ export const importAttemptId = () => import_attempts.id;
 // types get added). The specific field lives in candidate_info instead
 // (`{ field: 'nib_material', ... }`), so the enum doesn't have to grow with
 // it. unmatched_color_refresh is added by step 8's own migration, not here.
+// unparseable_row: a required field (not just the Nib column) was blank —
+// see docs/adr/2026-07-10-unparseable-rows-are-correctable.md.
 export const IMPORT_FLAG_TYPES = [
 	'needs_confirmation',
 	'possible_duplicate',
-	'unparseable_nib'
+	'unparseable_nib',
+	'unparseable_row'
 ] as const;
 export type ImportFlagType = (typeof IMPORT_FLAG_TYPES)[number];
 
@@ -408,9 +509,9 @@ export type ImportDecision = (typeof IMPORT_DECISIONS)[number];
 // human decision — parse sets decision = 'import' on those immediately, so
 // "commit refuses if any decision is null" still means exactly what the ADR
 // says: a row only blocks commit while something about it is genuinely
-// undecided. row_data always carries { entityType: 'pen' | 'ink', ... } —
-// entityType lives in the JSON rather than its own column, since nothing
-// else needs to query on it.
+// undecided. row_data always carries { entityType: 'pen' | 'ink', sourceLine,
+// ... } — entityType/sourceLine live in the JSON rather than their own
+// columns, since nothing else needs to query on them.
 export const import_flagged_items = sqliteTable('import_flagged_items', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	import_attempt_id: integer('import_attempt_id').notNull().references(importAttemptId),
@@ -418,9 +519,23 @@ export const import_flagged_items = sqliteTable('import_flagged_items', {
 	flag_type: text('flag_type', { enum: IMPORT_FLAG_TYPES }),
 	// Match candidate(s) — id/name/similarity for possible_duplicate, the
 	// specific field name plus resolveOrFlag's candidates for
-	// needs_confirmation. Null for unparseable_nib and for clean rows.
+	// needs_confirmation. Null for unparseable_nib/unparseable_row and for
+	// clean rows.
 	candidate_info: text('candidate_info', { mode: 'json' }).$type<Record<string, unknown>>(),
+	// Row-level decision — the only thing possible_duplicate/unparseable_nib/
+	// unparseable_row actually need (one judgment call per row: import/skip,
+	// or 'import' meaning "re-resolve, I corrected row_data.raw"). For
+	// needs_confirmation with more than one ambiguous field, this is NOT
+	// enough by itself — see field_decisions below and
+	// docs/adr/2026-07-10-per-field-decisions-not-per-row.md.
 	decision: text('decision', { enum: IMPORT_DECISIONS }),
 	decision_target_id: integer('decision_target_id'),
+	// One entry per ambiguous field named in candidate_info.fields/
+	// nibValueFlags — { [field]: { decision, decisionTargetId } }. Commit
+	// refuses a needs_confirmation row until every flagged field has an
+	// entry here, not just the first one found during parse.
+	field_decisions: text('field_decisions', { mode: 'json' }).$type<
+		Record<string, { decision: ImportDecision; decisionTargetId: number | null }>
+	>(),
 	decided_at: integer('decided_at', { mode: 'timestamp' })
 });

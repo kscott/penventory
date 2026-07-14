@@ -6,6 +6,8 @@ import {
 	filling_systems,
 	finishId,
 	finishes,
+	import_attempts,
+	importAttemptId,
 	lineId,
 	lines,
 	modelId,
@@ -54,7 +56,8 @@ describe('schema helpers', () => {
 		['nibPointSizeId', nibPointSizeId, () => nib_point_sizes.id],
 		['tagId', tagId, () => tags.id],
 		['penId', penId, () => pens.id],
-		['nibId', nibId, () => nibs.id]
+		['nibId', nibId, () => nibs.id],
+		['importAttemptId', importAttemptId, () => import_attempts.id]
 	] as const)('%s resolves to its target column', (_name, closure, expected) => {
 		expect(closure()).toBe(expected());
 	});

@@ -1,19 +1,31 @@
 import { isNearDuplicate, similarity } from '../similarity';
 
-// Reuses similarity()/isNearDuplicate() directly — the same function
-// resolveOrFlag uses for controlled-list dedup (phase1-plan.md step 3) — one
-// implementation of "is this a duplicate," not a per-caller copy. Composite
-// keys are built by the caller (fpc-import.ts) from the *original raw* CSV
-// field values, joined with a delimiter — Brand|Line|Name|Type for inks,
-// Brand|Model|Nib|Color|Material|Trim for pens — since a real near-dupe typo
-// shows up in the raw text, not in resolved ids.
-
-export type DuplicateCandidate = { id: number; compositeKey: string };
+// Two-stage matching, not a single fuzzy comparison over one joined string.
+// Confirmed necessary against Ken's real collection data (2026-07-10): a
+// whole-composite-key fuzzy comparison let a long *shared* prefix (Brand,
+// Model, Material, Trim Color are identical across every colorway of the
+// same pen line — completely normal in a real collection) drown out the one
+// field that's actually supposed to differ. Two genuinely distinct pens
+// ("Esterbrook Estie Aqua" vs "Esterbrook Estie Maui", identical in every
+// other field) scored similarity ~0.9 on the old whole-string approach —
+// comfortably past the 0.7 threshold — producing a false "possible
+// duplicate" on nearly half of a real ~540-row import.
+//
+// Stage 1 (`groupKey`): exact match only. Built from *resolved* identity —
+// real database ids where a field resolved cleanly, a stable `new:<name>`
+// marker where it's about to be created — never raw text compared fuzzily.
+// See fpc-import.ts's identity-key builders for how this is constructed.
+// Stage 2 (`freeText`): fuzzy-or-exact match, but only ever run against
+// candidates that already passed stage 1 — isolates the actual
+// identity-distinguishing field (Color for pens, Name for inks) instead of
+// letting it get diluted by everything else in the row.
+export type IdentityCandidate = { id: number; groupKey: string; freeText: string };
 
 export type DuplicateMatch = {
 	matchType: 'existing' | 'batch';
 	id: number;
-	compositeKey: string;
+	groupKey: string;
+	freeText: string;
 	similarity: number;
 };
 
@@ -21,32 +33,37 @@ function normalize(value: string): string {
 	return value.trim().toLowerCase();
 }
 
-// Checks a row's composite key against every already-committed row of that
-// type (existing) and every other row already processed in the same import
-// batch (batch — nothing in the batch is written until commit, so this is
-// the only way to catch two duplicate rows arriving in the same file).
-// Exact matches are included too, not treated as automatic no-ops — real
-// duplicates happen in FPC exports (see the identity ADR), so even an exact
-// repeat still needs an explicit skip/import call.
+// Checks a row's (groupKey, freeText) identity against every already-
+// committed row of that type (existing) and every other row already
+// processed in the same import batch (batch — nothing in the batch is
+// written until commit, so this is the only way to catch two duplicate rows
+// arriving in the same file). Exact freeText matches are included too, not
+// treated as automatic no-ops — real duplicates happen in FPC exports (see
+// the identity ADR), so even an exact repeat still needs an explicit
+// skip/import call.
 export function findDuplicateMatches(
-	compositeKey: string,
-	existing: DuplicateCandidate[],
-	batch: DuplicateCandidate[]
+	groupKey: string,
+	freeText: string,
+	existing: IdentityCandidate[],
+	batch: IdentityCandidate[] = []
 ): DuplicateMatch[] {
-	const normalizedKey = normalize(compositeKey);
+	const normalizedGroupKey = normalize(groupKey);
+	const normalizedFreeText = normalize(freeText);
 
-	const score = (matchType: 'existing' | 'batch', candidates: DuplicateCandidate[]) =>
+	const score = (matchType: 'existing' | 'batch', candidates: IdentityCandidate[]) =>
 		candidates
+			.filter((candidate) => normalize(candidate.groupKey) === normalizedGroupKey)
 			.map((candidate) => ({
 				matchType,
 				id: candidate.id,
-				compositeKey: candidate.compositeKey,
-				similarity: similarity(normalizedKey, normalize(candidate.compositeKey))
+				groupKey: candidate.groupKey,
+				freeText: candidate.freeText,
+				similarity: similarity(normalizedFreeText, normalize(candidate.freeText))
 			}))
 			.filter(
 				(match) =>
-					normalize(match.compositeKey) === normalizedKey ||
-					isNearDuplicate(normalizedKey, normalize(match.compositeKey))
+					normalize(match.freeText) === normalizedFreeText ||
+					isNearDuplicate(normalizedFreeText, normalize(match.freeText))
 			);
 
 	return [...score('existing', existing), ...score('batch', batch)].sort(

@@ -7,6 +7,7 @@ import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { migrateDatabase } from './migrate';
 import {
+	aliases,
 	brands,
 	filling_systems,
 	finishes,
@@ -19,9 +20,12 @@ import {
 	nib_purities,
 	nib_shapes,
 	nibs,
+	FINISH_SEED,
 	NIB_BASE_SIZE_SEED,
+	NIB_MATERIAL_SEED,
 	NIB_POINT_SIZE_SEED,
 	NIB_PURITY_SEED,
+	NIB_SHAPE_SEED,
 	pen_materials,
 	pens,
 	taggables,
@@ -63,8 +67,14 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 		const penMaterial = db.insert(pen_materials).values({ name: 'Acrylic' }).returning().get();
 		const finish = db.insert(finishes).values({ name: 'Rhodium' }).returning().get();
 		const fillingSystem = db.insert(filling_systems).values({ name: 'Piston' }).returning().get();
-		const nibMaterial = db.insert(nib_materials).values({ name: 'Gold' }).returning().get();
-		const nibShape = db.insert(nib_shapes).values({ name: 'Round' }).returning().get();
+		// Gold/Round are pre-seeded by migration now — select rather than
+		// insert, same pattern as purity/baseSize/pointSize below.
+		const nibMaterial = db
+			.select()
+			.from(nib_materials)
+			.where(eq(nib_materials.name, 'Gold'))
+			.get()!;
+		const nibShape = db.select().from(nib_shapes).where(eq(nib_shapes.name, 'Round')).get()!;
 		const vendor = db.insert(vendors).values({ name: 'PenRealm' }).returning().get();
 		const purity = db.select().from(nib_purities).where(eq(nib_purities.name, '14K')).get()!;
 		const baseSize = db.select().from(nib_base_sizes).where(eq(nib_base_sizes.name, '#6')).get()!;
@@ -90,6 +100,42 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 		expect(names(db.select().from(nib_purities).all())).toEqual([...NIB_PURITY_SEED].sort());
 		expect(names(db.select().from(nib_base_sizes).all())).toEqual([...NIB_BASE_SIZE_SEED].sort());
 		expect(names(db.select().from(nib_point_sizes).all())).toEqual([...NIB_POINT_SIZE_SEED].sort());
+	});
+
+	it('seeds the known nib_shapes/nib_materials/finishes vocabulary on migration, plus the Journaler alias', () => {
+		const names = (rows: { name: string }[]) => rows.map((r) => r.name).sort();
+		expect(names(db.select().from(nib_shapes).all())).toEqual([...NIB_SHAPE_SEED].sort());
+		expect(names(db.select().from(nib_materials).all())).toEqual([...NIB_MATERIAL_SEED].sort());
+		expect(names(db.select().from(finishes).all())).toEqual([...FINISH_SEED].sort());
+
+		// "Journaler" is, by definition, a Medium Cursive Smooth Italic — the
+		// alias target is the multi-word shape, not plain "Cursive Italic".
+		const cursiveSmoothItalic = db
+			.select()
+			.from(nib_shapes)
+			.where(eq(nib_shapes.name, 'Cursive Smooth Italic'))
+			.get()!;
+		const journalerAlias = db
+			.select()
+			.from(aliases)
+			.where(and(eq(aliases.alias, 'Journaler'), eq(aliases.aliasable_type, 'nib_shape')))
+			.get();
+		expect(journalerAlias?.aliasable_id).toBe(cursiveSmoothItalic.id);
+
+		const goldTone = db.select().from(finishes).where(eq(finishes.name, 'Gold Tone')).get()!;
+		const silverTone = db.select().from(finishes).where(eq(finishes.name, 'Silver Tone')).get()!;
+		const goldAlias = db
+			.select()
+			.from(aliases)
+			.where(and(eq(aliases.alias, 'Gold'), eq(aliases.aliasable_type, 'finish')))
+			.get();
+		const silverAlias = db
+			.select()
+			.from(aliases)
+			.where(and(eq(aliases.alias, 'Silver'), eq(aliases.aliasable_type, 'finish')))
+			.get();
+		expect(goldAlias?.aliasable_id).toBe(goldTone.id);
+		expect(silverAlias?.aliasable_id).toBe(silverTone.id);
 	});
 
 	describe('pens', () => {
@@ -130,6 +176,23 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 				.get();
 			expect(pen.size_category).toBeNull();
 			expect(pen.condition).toBeNull();
+		});
+
+		it('accepts a null trim_color_id — real, confirmed case: some pens have no plated trim hardware at all', () => {
+			const f = seedControlledLists();
+			const pen = db
+				.insert(pens)
+				.values({
+					brand_id: f.brand.id,
+					model_id: f.model.id,
+					color: 'Primary Manipulation 5.5',
+					material_id: f.penMaterial.id,
+					filling_system_id: f.fillingSystem.id,
+					ownership_state: 'active'
+				})
+				.returning()
+				.get();
+			expect(pen.trim_color_id).toBeNull();
 		});
 
 		it.each(['brand_id', 'model_id', 'material_id', 'trim_color_id', 'filling_system_id'] as const)(
@@ -214,6 +277,7 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 		function validValues(f: ReturnType<typeof seedControlledLists>) {
 			return {
 				brand_id: f.brand.id,
+				manufacturer_id: f.brand.id,
 				material_id: f.nibMaterial.id,
 				purity_id: f.purity.id,
 				base_size_id: f.baseSize.id,
@@ -230,7 +294,15 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 			expect(nib.id).toBeTypeOf('number');
 		});
 
-		it('accepts brand_id, purity_id, finish_id, and nibmeister_id all null', () => {
+		it('accepts brand_id and manufacturer_id pointing at the same brand row — a vertically-integrated maker (e.g. Pilot) is genuinely both', () => {
+			const f = seedControlledLists();
+			const nib = db.insert(nibs).values(validValues(f)).returning().get();
+
+			expect(nib.brand_id).toBe(f.brand.id);
+			expect(nib.manufacturer_id).toBe(f.brand.id);
+		});
+
+		it('accepts brand_id, manufacturer_id, purity_id, finish_id, and nibmeister_id all null', () => {
 			const f = seedControlledLists();
 			const nib = db
 				.insert(nibs)
@@ -244,6 +316,7 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 				.get();
 
 			expect(nib.brand_id).toBeNull();
+			expect(nib.manufacturer_id).toBeNull();
 			expect(nib.purity_id).toBeNull();
 			expect(nib.finish_id).toBeNull();
 			expect(nib.nibmeister_id).toBeNull();
@@ -251,6 +324,7 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 
 		it.each([
 			'brand_id',
+			'manufacturer_id',
 			'material_id',
 			'purity_id',
 			'base_size_id',

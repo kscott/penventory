@@ -1,0 +1,1 @@
+ALTER TABLE `import_flagged_items` ADD `field_decisions` text;
