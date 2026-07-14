@@ -1066,6 +1066,22 @@ describe('fpc-import (parse + commit)', () => {
 			expect(nibmeister?.name).toBe('Gena Saloreno');
 		});
 
+		it('commits "Flex" as its own point size with is_flex set — Noodler\'s factory name that also describes real behavior', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-flex'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const nib = db.select().from(nibs).all()[0];
+			expect(nib.is_flex).toBe(true);
+			expect(nib.brand_id).toBeNull();
+			expect(nib.manufacturer_id).toBeNull();
+			expect(nib.nibmeister_id).toBeNull();
+			expect(nib.is_custom_grind).toBe(false);
+		});
+
 		it('an unparseable_nib corrected to a nibmeister grind resolves nibmeister_id through the re-resolution path too', async () => {
 			const { attemptId } = parseCatalogImport(db, {
 				pensCSV: fixture('pens', 'nib-malformed-token'),

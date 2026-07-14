@@ -71,6 +71,20 @@
       "when": 1783986814836,
       "tag": "0009_seed_nib_shape_material_finish_vocabulary",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1783989386941,
+      "tag": "0010_illegal_zombie",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1783989395745,
+      "tag": "0011_seed_flex_seagull_long_knife",
+      "breakpoints": true
     }
   ]
 }

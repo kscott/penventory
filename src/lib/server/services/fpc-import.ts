@@ -1150,7 +1150,8 @@ function runCommitTransaction(
 						finish_id: nibFinishId,
 						nibmeister_id: nibmeisterId,
 						custom_name: rowData.nib.customName,
-						is_custom_grind: rowData.nib.isCustomGrind
+						is_custom_grind: rowData.nib.isCustomGrind,
+						is_flex: rowData.nib.isFlex
 					});
 					counters.onNibCreated();
 

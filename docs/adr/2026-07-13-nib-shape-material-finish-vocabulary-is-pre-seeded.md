@@ -62,6 +62,24 @@ how the nib came from the factory. `brand_id`/`manufacturer_id` stay null for th
 `POINT_SIZE_MAKER`'s manufacturer-branded point sizes (Signature/Zoom/Music/CM), which are a
 maker's own stock design, never `is_custom_grind`.
 
+Two more nibmeister grinds followed, closing out the rest of the real-file review's loose ends:
+`"Seagul"` (Monty Winnfield — a stacked nib, any size point, no implied width; the raw text is a
+typo of the correctly-spelled canonical shape `"Seagull"`, aliased). `"Long Knife"`/`"Long Blade"`
+(interchangeable — an Architect-type shape) turned out **not** to be a nibmeister grind at all: no
+nibmeister was named, so it's just an ordinary seeded shape with no forced `is_custom_grind` and no
+`nibmeister_id` — it already requires an explicit point size by default, the same as any shape word
+not listed in `NIBMEISTER_GRIND`, with no special-case code needed for that half.
+
+**`nibs.is_flex` is a new column**, added for a real, confirmed case that doesn't fit
+`NIBMEISTER_GRIND`: Noodler's markets `"Flex"` as the nib's own factory name/type (two Konrad pens,
+FPC's `Nib` column literally just `"Flex"`, no separate width ever given, and not worth chasing
+down for two retired pens) — the same word names the nib *and* describes its actual behavior. The
+name is just another point size, same mechanism as Signature/Zoom/Music/CM (`Flex` in
+`NIB_POINT_SIZE_SEED`), with no brand/manufacturer/shape implied — nothing was said about who made
+these nibs beyond the pen's own brand, and reusing it would be a guess. The behavior lives
+independently on `nibs.is_flex` (boolean, default false), set whenever the point size resolves to
+`"Flex"`.
+
 **A real, independent bug surfaced while adding this seed data**, not just a data gap: seeding
 `Gold` as a `nib_material` broke `"F Rose Gold"` parsing — `materialName` resolved to `"Gold"` and
 `"Rose"` was left as orphaned `custom_name`, with the finish silently dropped. Cause: shape,

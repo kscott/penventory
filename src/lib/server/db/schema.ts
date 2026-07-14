@@ -196,7 +196,8 @@ export const NIB_POINT_SIZE_SEED = [
 	'1.5',
 	'Signature',
 	'Zoom',
-	'Music'
+	'Music',
+	'Flex'
 ] as const;
 
 // Seed values for nib_shapes/nib_materials (and the finish-tone slice of
@@ -222,7 +223,9 @@ export const NIB_SHAPE_SEED = [
 	'Italic',
 	'Oblique',
 	'Scribe',
-	'Imperial'
+	'Imperial',
+	'Seagull',
+	'Long Knife'
 ] as const;
 export const NIB_MATERIAL_SEED = ['Steel', 'Gold', 'Titanium'] as const;
 // Gold/Silver are intentionally absent as canonical names — Ken's real trim
@@ -347,6 +350,14 @@ export const nibs = sqliteTable('nibs', {
 	finish_id: integer('finish_id').references(finishId),
 	custom_name: text('custom_name'),
 	is_custom_grind: integer('is_custom_grind', { mode: 'boolean' }).notNull().default(false),
+	// A physical characteristic, independent of custom_name/is_custom_grind —
+	// confirmed real, factory case (Ken, 2026-07-13): Noodler's markets
+	// "Flex" as the nib's own factory name/type (FPC's Nib column is
+	// literally just "Flex", no separate width given), which also happens to
+	// describe the nib's actual flex behavior. Distinct concepts that happen
+	// to collide in that one word: is_flex captures the behavior, independent
+	// of whatever the nib's name/shape/grind turns out to be.
+	is_flex: integer('is_flex', { mode: 'boolean' }).notNull().default(false),
 	grind_description: text('grind_description'),
 	nibmeister_id: integer('nibmeister_id').references(vendorId),
 	ground_on: integer('ground_on', { mode: 'timestamp' }),

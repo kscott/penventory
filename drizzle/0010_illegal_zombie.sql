@@ -1,0 +1,1 @@
+ALTER TABLE `nibs` ADD `is_flex` integer DEFAULT false NOT NULL;

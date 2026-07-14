@@ -36,6 +36,7 @@ export type ParsedNibText =
 			brandName: string | null;
 			manufacturerName: string | null;
 			nibmeisterName: string | null;
+			isFlex: boolean;
 	  };
 
 // A handful of point sizes are a specific vertically-integrated maker's own
@@ -54,29 +55,49 @@ const POINT_SIZE_MAKER: Record<string, { brand: string; manufacturer: string; sh
 	Music: { brand: 'Sailor', manufacturer: 'Sailor' }
 };
 
+// "Flex" is a real, confirmed case (Ken, 2026-07-13) where the point-size
+// *name* and a physical *behavior* collide in one word — Noodler's markets
+// "Flex" as the nib's own factory name/type (no separate width given at
+// all; the actual width isn't known and isn't worth chasing down for two
+// retired pens), and it also happens to actually flex. `nibs.is_flex`
+// captures the behavior; the name itself is just another point size, same
+// mechanism as Signature/Zoom/Music/CM, with no brand/manufacturer/shape
+// implied — nothing was said about who made these Konrad nibs beyond the
+// pen brand itself, and reusing the pen's own brand would be a guess.
+const POINT_SIZE_IS_FLEX = new Set(['Flex']);
+
 // Some shape words are themselves the name of a publicly-known, popularized
 // nibmeister grind — not a manufacturer's own stock shape, even though
 // (like any other shape word) they resolve via alias/exact-match to a
 // canonical nib_shapes entry. Confirmed public, industry-known terminology
 // popularized through Esterbrook (Ken, 2026-07-13): "Journaler" (Gena
-// Saloreno, implies Medium), "Scribe" (Joshua Lax, implies Broad), and
+// Saloreno, implies Medium), "Scribe" (Joshua Lax, implies Broad),
 // "Imperial" (Kirk Speer — a Stub variant, half-round and flat on top,
 // distinct enough from plain Stub to be its own seeded shape rather than an
-// alias to it) — Imperial has no implied point size of its own, unlike the
-// other two; bare "Imperial" with no width given anywhere still correctly
-// stays unparseable, needing a real correction, not a guess. The
-// nibmeister fact applies whenever the word appears at all, not only when
-// its point size is the implied one — "M Journaler" is still Gena
-// Saloreno's grind. Distinct from POINT_SIZE_MAKER's manufacturer-branded
-// point sizes (Signature/Zoom/Music/CM — a maker's own stock design:
-// brand_id/manufacturer_id set, never is_custom_grind): these are a
-// nibmeister's aftermarket modification of someone else's blank —
+// alias to it), and "Seagul" (Monty Winnfield — a stacked nib, any size
+// point). Imperial and Seagul have no implied point size of their own,
+// unlike Journaler/Scribe; bare text with no width given anywhere for
+// those two still correctly stays unparseable, needing a real correction,
+// not a guess. The nibmeister fact applies whenever the word appears at
+// all, not only when its point size is the implied one — "M Journaler" is
+// still Gena Saloreno's grind. Distinct from POINT_SIZE_MAKER's
+// manufacturer-branded point sizes (Signature/Zoom/Music/CM — a maker's own
+// stock design: brand_id/manufacturer_id set, never is_custom_grind): these
+// are a nibmeister's aftermarket modification of someone else's blank —
 // nibmeister_id set instead, is_custom_grind always true, brand_id/
 // manufacturer_id stay unknown/null.
+//
+// "Long Knife"/"Long Blade" (interchangeable, an Architect-type shape) are
+// deliberately absent here — no nibmeister was named for these, so they're
+// just an ordinary seeded shape (see NIB_SHAPE_SEED), not a nibmeister
+// grind: no forced is_custom_grind, no nibmeister_id. They already require
+// an explicit point size by default, same as any other shape word not
+// listed in this map — no special-case code needed for that half.
 const NIBMEISTER_GRIND: Record<string, { impliedPointSize?: string; nibmeister: string }> = {
 	Journaler: { impliedPointSize: 'M', nibmeister: 'Gena Saloreno' },
 	Scribe: { impliedPointSize: 'B', nibmeister: 'Joshua Lax' },
-	Imperial: { nibmeister: 'Kirk Speer' }
+	Imperial: { nibmeister: 'Kirk Speer' },
+	Seagul: { nibmeister: 'Monty Winnfield' }
 };
 
 // One phrase per candidate name (canonical or alias), longest-word-count
@@ -326,6 +347,7 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 		flags,
 		brandName: maker?.brand ?? null,
 		manufacturerName: maker?.manufacturer ?? null,
-		nibmeisterName
+		nibmeisterName,
+		isFlex: POINT_SIZE_IS_FLEX.has(pointSize)
 	};
 }

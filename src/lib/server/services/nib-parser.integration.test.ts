@@ -45,7 +45,8 @@ describe('parseNibText', () => {
 			flags: [],
 			brandName: null,
 			manufacturerName: null,
-			nibmeisterName: null
+			nibmeisterName: null,
+			isFlex: false
 		});
 	});
 
@@ -198,9 +199,70 @@ describe('parseNibText', () => {
 		});
 	});
 
+	it('"Seagul" has no implied point size of its own either — bare stays unparseable', () => {
+		const result = parseNibText(db, 'Seagul');
+		expect(result.kind).toBe('unparseable');
+	});
+
+	it('"Seagul" with an explicit point size resolves via alias to "Seagull", with its nibmeister (Monty Winnfield)', () => {
+		const result = parseNibText(db, 'M Seagul');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			pointSize: 'M',
+			shapeName: 'Seagull',
+			customName: null,
+			isCustomGrind: true,
+			nibmeisterName: 'Monty Winnfield',
+			brandName: null,
+			manufacturerName: null
+		});
+	});
+
 	it('text with no point size and no recognizable vocabulary at all is flagged', () => {
 		const result = parseNibText(db, 'Long Knife');
 		expect(result.kind).toBe('unparseable');
+	});
+
+	it('"Long Knife" with an explicit point size is an ordinary shape — no nibmeister named, not a custom grind', () => {
+		const result = parseNibText(db, 'M Long Knife');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			pointSize: 'M',
+			shapeName: 'Long Knife',
+			customName: null,
+			isCustomGrind: false,
+			nibmeisterName: null
+		});
+	});
+
+	it('"Long Blade" resolves via alias to canonical shape "Long Knife" — confirmed interchangeable', () => {
+		const result = parseNibText(db, 'M Long Blade');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			shapeName: 'Long Knife',
+			isCustomGrind: false,
+			nibmeisterName: null
+		});
+	});
+
+	it('"Flex" is Noodler\'s own factory point size, not a generic width — sets is_flex, no brand/manufacturer implied', () => {
+		const result = parseNibText(db, 'Flex');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			pointSize: 'Flex',
+			shapeName: 'Round',
+			customName: null,
+			isCustomGrind: false,
+			isFlex: true,
+			brandName: null,
+			manufacturerName: null,
+			nibmeisterName: null
+		});
+	});
+
+	it('a point size other than "Flex" never sets is_flex', () => {
+		const result = parseNibText(db, 'M');
+		expect(result).toMatchObject({ isFlex: false });
 	});
 
 	it('a leftover token that near-matches a known shape/material/finish is flagged rather than treated as a custom name', () => {

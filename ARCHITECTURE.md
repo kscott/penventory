@@ -102,12 +102,21 @@ later category (`"Rose Gold"`, a finish), a real bug the seeding surfaced. See
 [[docs/adr/2026-07-13-nib-shape-material-finish-vocabulary-is-pre-seeded]].
 
 **`nibs.nibmeister_id` is populated by import, via the same `NIBMEISTER_GRIND` mechanism.**
-"Journaler" (Gena Saloreno), "Scribe" (Joshua Lax), and "Imperial" (Kirk Speer) are publicly-known
-nibmeister grinds popularized through Esterbrook — each a real shape word resolving through the
-seeded vocabulary above, but always `is_custom_grind: true` (an aftermarket modification, not
-factory stock) with `brand_id`/`manufacturer_id` staying null, distinct from `POINT_SIZE_MAKER`'s
-manufacturer-branded point sizes. Journaler/Scribe each imply their own point size (Medium/Broad)
-when no width is given; Imperial has none, so bare `"Imperial"` correctly stays `unparseable_nib`.
+"Journaler" (Gena Saloreno), "Scribe" (Joshua Lax), "Imperial" (Kirk Speer), and "Seagul"/"Seagull"
+(Monty Winnfield) are publicly-known nibmeister grinds popularized through Esterbrook — each a real
+shape word resolving through the seeded vocabulary above, but always `is_custom_grind: true` (an
+aftermarket modification, not factory stock) with `brand_id`/`manufacturer_id` staying null,
+distinct from `POINT_SIZE_MAKER`'s manufacturer-branded point sizes. Journaler/Scribe each imply
+their own point size (Medium/Broad) when no width is given; Imperial/Seagul have none, so bare text
+correctly stays `unparseable_nib`. "Long Knife"/"Long Blade" (interchangeable, an Architect-type
+shape) look similar but aren't a nibmeister grind — no nibmeister was named, so it's just an
+ordinary seeded shape, no forced `is_custom_grind`, no `nibmeister_id`.
+
+**`nibs.is_flex`** is a separate boolean, independent of `custom_name`/`is_custom_grind` —
+Noodler's markets `"Flex"` as the nib's own factory name/type (FPC's `Nib` column is literally just
+`"Flex"`, no separate width given), which also happens to describe real flex behavior. The name
+resolves as an ordinary point size (`NIB_POINT_SIZE_SEED`, no brand/manufacturer/shape implied);
+`is_flex` is set independently whenever the point size is `"Flex"`.
 See [[docs/adr/2026-07-13-nib-shape-material-finish-vocabulary-is-pre-seeded]].
 
 ## Computed values are never stored twice
