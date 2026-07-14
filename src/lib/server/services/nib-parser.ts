@@ -53,6 +53,15 @@ const POINT_SIZE_MAKER: Record<string, { brand: string; manufacturer: string; sh
 	Music: { brand: 'Sailor', manufacturer: 'Sailor' }
 };
 
+// The reverse of POINT_SIZE_MAKER: a shape *word* that implies its own
+// point size, by definition, when no separate width is given anywhere in
+// the text. "Journaler" is always Medium (Ken, 2026-07-13) — the shape
+// itself is resolved normally afterward via the "Journaler" ->
+// "Cursive Smooth Italic" alias, same mechanism as any other shape word.
+const SHAPE_IMPLIED_POINT_SIZE: Record<string, string> = {
+	Journaler: 'M'
+};
+
 // One phrase per candidate name (canonical or alias), longest-word-count
 // first — so "Cursive Smooth Italic" is tried before "Cursive Italic" before
 // "Italic", never matching a shorter phrase that's actually a substring of a
@@ -187,7 +196,21 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 		);
 		isOblique = pointSizeIndex !== -1;
 	}
+	// Some shape words carry their own implied point size by convention, even
+	// with no separate width given anywhere in the text — "Journaler" is
+	// always Medium, by definition (Ken, 2026-07-13). Checked only after
+	// both real point-size checks above fail, and doesn't consume the
+	// token — it's left in place so the shape-matching step below still
+	// finds and resolves it via the "Journaler" -> "Cursive Smooth Italic"
+	// alias, the same as when a width is given explicitly ("M Journaler").
+	let impliedPointSize: string | null = null;
 	if (pointSizeIndex === -1) {
+		const impliedEntry = Object.entries(SHAPE_IMPLIED_POINT_SIZE).find(([shape]) =>
+			tokens.some((t) => t.toLowerCase() === shape.toLowerCase())
+		);
+		if (impliedEntry) impliedPointSize = impliedEntry[1];
+	}
+	if (pointSizeIndex === -1 && !impliedPointSize) {
 		const nearMiss = tokens.find((t) =>
 			NIB_POINT_SIZE_SEED.some((size) => isNearDuplicate(t.toLowerCase(), size.toLowerCase()))
 		);
@@ -198,8 +221,15 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 				: 'no point size found anywhere in the text'
 		};
 	}
-	const pointSize = isOblique ? tokens[pointSizeIndex].slice(1) : tokens[pointSizeIndex];
-	tokens = [...tokens.slice(0, pointSizeIndex), ...tokens.slice(pointSizeIndex + 1)];
+	let pointSize: string;
+	if (pointSizeIndex === -1) {
+		// impliedPointSize — no token to remove; the shape word that implied
+		// it stays in tokens for the shape-matching step below.
+		pointSize = impliedPointSize!;
+	} else {
+		pointSize = isOblique ? tokens[pointSizeIndex].slice(1) : tokens[pointSizeIndex];
+		tokens = [...tokens.slice(0, pointSizeIndex), ...tokens.slice(pointSizeIndex + 1)];
+	}
 
 	const flags: NibFieldFlag[] = [];
 

@@ -23,8 +23,11 @@ Seed `nib_shapes`, `nib_materials`, and `finishes` with what's already confirmed
 `collected_pens.csv`/`collected_pens.csv` Trim Color column (`NIB_SHAPE_SEED`/`NIB_MATERIAL_SEED`/
 `FINISH_SEED` in `schema.ts`, migration `0009`):
 - `nib_shapes`: Round, Stub, Cursive Italic, Cursive Smooth Italic, Architect, Italic, Oblique —
-  plus a `Journaler` → `Cursive Italic` alias (phase1-plan.md's own documented example, never
-  actually seeded until now).
+  plus a `Journaler` → `Cursive Smooth Italic` alias. phase1-plan.md's own original example named
+  this same alias but guessed plain "Cursive Italic" as the target; corrected once Ken confirmed
+  the actual definition: "Journaler" is, by definition, a Medium Cursive Smooth Italic — both the
+  shape *and* an implied Medium point size when no width is given anywhere in the text (the latter
+  handled by `nib-parser.ts`'s `SHAPE_IMPLIED_POINT_SIZE`, not the migration).
 - `nib_materials`: Steel, Gold, Titanium.
 - `finishes`: shared with pens' own Trim Color (same table), seeded with the combined real
   vocabulary. `Gold`/`Silver` are seeded as **`Gold Tone`/`Silver Tone`** with `Gold`/`Silver` as

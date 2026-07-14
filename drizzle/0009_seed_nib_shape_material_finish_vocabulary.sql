@@ -11,7 +11,11 @@
 -- his real collected_pens.csv, so first occurrence resolves correctly. See
 -- docs/adr/2026-07-13-nib-manufacturer-and-brand-are-independent-fields.md.
 INSERT INTO `nib_shapes` (`name`) VALUES ('Round'), ('Stub'), ('Cursive Italic'), ('Cursive Smooth Italic'), ('Architect'), ('Italic'), ('Oblique');--> statement-breakpoint
-INSERT INTO `aliases` (`alias`, `aliasable_type`, `aliasable_id`) SELECT 'Journaler', 'nib_shape', `id` FROM `nib_shapes` WHERE `name` = 'Cursive Italic';--> statement-breakpoint
+-- "Journaler" is, by definition, a Medium Cursive Smooth Italic (Ken,
+-- 2026-07-13) — the shape alias target, corrected from an earlier guess of
+-- plain "Cursive Italic". The implied-Medium half of that definition lives
+-- in nib-parser.ts's SHAPE_IMPLIED_POINT_SIZE, not here.
+INSERT INTO `aliases` (`alias`, `aliasable_type`, `aliasable_id`) SELECT 'Journaler', 'nib_shape', `id` FROM `nib_shapes` WHERE `name` = 'Cursive Smooth Italic';--> statement-breakpoint
 INSERT INTO `nib_materials` (`name`) VALUES ('Steel'), ('Gold'), ('Titanium');--> statement-breakpoint
 -- Gold/Silver are seeded as "Gold Tone"/"Silver Tone" — Ken's real trim
 -- colors are almost always describing the visual tone of the plating, not

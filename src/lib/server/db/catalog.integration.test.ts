@@ -108,17 +108,19 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 		expect(names(db.select().from(nib_materials).all())).toEqual([...NIB_MATERIAL_SEED].sort());
 		expect(names(db.select().from(finishes).all())).toEqual([...FINISH_SEED].sort());
 
-		const cursiveItalic = db
+		// "Journaler" is, by definition, a Medium Cursive Smooth Italic — the
+		// alias target is the multi-word shape, not plain "Cursive Italic".
+		const cursiveSmoothItalic = db
 			.select()
 			.from(nib_shapes)
-			.where(eq(nib_shapes.name, 'Cursive Italic'))
+			.where(eq(nib_shapes.name, 'Cursive Smooth Italic'))
 			.get()!;
 		const journalerAlias = db
 			.select()
 			.from(aliases)
 			.where(and(eq(aliases.alias, 'Journaler'), eq(aliases.aliasable_type, 'nib_shape')))
 			.get();
-		expect(journalerAlias?.aliasable_id).toBe(cursiveItalic.id);
+		expect(journalerAlias?.aliasable_id).toBe(cursiveSmoothItalic.id);
 
 		const goldTone = db.select().from(finishes).where(eq(finishes.name, 'Gold Tone')).get()!;
 		const silverTone = db.select().from(finishes).where(eq(finishes.name, 'Silver Tone')).get()!;

@@ -84,11 +84,11 @@ describe('parseNibText', () => {
 		});
 	});
 
-	it('the seeded "Journaler" alias resolves to canonical shape "Cursive Italic" out of the box, the same way brand aliases resolve', () => {
+	it('the seeded "Journaler" alias resolves to canonical shape "Cursive Smooth Italic" out of the box, the same way brand aliases resolve', () => {
 		const result = parseNibText(db, 'M Journaler');
 		expect(result).toMatchObject({
 			kind: 'parsed',
-			shapeName: 'Cursive Italic',
+			shapeName: 'Cursive Smooth Italic',
 			customName: null,
 			isCustomGrind: false
 		});
@@ -149,8 +149,19 @@ describe('parseNibText', () => {
 	});
 
 	it('a bare custom grind name with no point size anywhere is flagged, not defaulted', () => {
-		const result = parseNibText(db, 'Journaler');
+		const result = parseNibText(db, 'Scribe');
 		expect(result.kind).toBe('unparseable');
+	});
+
+	it('bare "Journaler" with no point size given anywhere implies Medium, by definition — resolves instead of unparseable', () => {
+		const result = parseNibText(db, 'Journaler');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			pointSize: 'M',
+			shapeName: 'Cursive Smooth Italic',
+			customName: null,
+			isCustomGrind: false
+		});
 	});
 
 	it('text with no point size and no recognizable vocabulary at all is flagged', () => {
