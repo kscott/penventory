@@ -65,74 +65,40 @@ alias string still refuses, with a clear error rather than a raw DB exception. S
 [[docs/adr/2026-07-10-alias-to-is-idempotent-across-a-batch]].
 
 **Not every fixed vocabulary goes through this machinery.** `nib_purities`, `nib_base_sizes`,
-`nib_point_sizes` are real lookup tables (so adding a value is a data operation, not a deploy) but
-are resolved exact-match-only — deliberately excluded from fuzzy/alias treatment, since real data
-confirms values like "FM"/"MF"/"F/M" are genuinely distinct vendor conventions, not typos of each
-other. See [[docs/adr/2026-07-09-nib-value-lookup-tables-not-enums]]. Unlike base_size/purity,
-point_size has no "add new value" flagged pathway at all — an unrecognized point size is
-`unparseable_nib`, full stop; extending the seed set is a code+migration change (a hand-authored
-`--custom` migration, same as the original seed), not something Phase 1.1's review UI can do.
+`nib_point_sizes` are real lookup tables, resolved exact-match-only — no fuzzy/alias treatment. See
+[[docs/adr/2026-07-09-nib-value-lookup-tables-not-enums]]. `point_size` has no "add new value"
+flagged pathway at all — an unrecognized point size is `unparseable_nib`, full stop; extending the
+seed set is a code+migration change, not something Phase 1.1's review UI can do.
 
-**`nibs.brand_id` and `nibs.manufacturer_id` are two independent nullable FKs into `brands`, not
-one.** They represent genuinely different facts — who brands/sells/customizes a nib versus who
-physically manufactures the blank (JoWo, Bock, etc.) — and can be equal (a vertically-integrated
-maker like Pilot), different (a JoWo blank sold under Esterbrook), or either/both null (the common
-case). No constraint ties them together; the rule is "populate whichever you actually know," not
-"they must never match." A handful of point sizes are themselves a specific maker's proprietary
-design — Pilot's Signature/CM, Sailor's Zoom/Music — and `parseNibText` resolves brand+manufacturer
-(and, where the design isn't round, an implied shape) straight from the point-size code itself, via
-the same `resolveOrFlag('brand', ...)` pens' own `Brand` field already uses. See
+**`nibs.brand_id` and `nibs.manufacturer_id` are two independent nullable FKs into `brands`.**
+`brand_id` is who brands/sells/customizes a nib; `manufacturer_id` is who physically makes the
+blank. No constraint ties them together — equal, different, or either/both null are all valid,
+though no current import path ever produces them different (`POINT_SIZE_MAKER` in `nib-parser.ts`
+always sets both to the same maker — Pilot's Signature/CM, Sailor's Zoom/Music — resolved via the
+same `resolveOrFlag('brand', ...)` pens' own `Brand` field uses). See
 [[docs/adr/2026-07-13-nib-manufacturer-and-brand-are-independent-fields]].
 
-**`nib_shapes`/`nib_materials`/`finishes` are pre-seeded with Ken's confirmed real vocabulary
-(`NIB_SHAPE_SEED`/`NIB_MATERIAL_SEED`/`FINISH_SEED` in `schema.ts`), not left empty.**
-`parseNibText` matches shape/material/finish words against these tables *before* a value ever
-reaches `resolveOrFlag` — an unmatched word silently becomes `custom_name` with the material/shape
-defaulted, never offered as a "new value" candidate the way `nib_base_size`/`nib_purity` are. On a
-genuinely empty database, most of the real Nib column's descriptive words would never be
-recognized as structured data at all. `finishes` is shared with pens' own Trim Color; `Gold`/
-`Silver` are seeded as `Gold Tone`/`Silver Tone` (tone, not composition — real metal composition is
-a separate fact, `pens.material_id`) with `Gold`/`Silver` as raw-text aliases, while `Copper`/
-`Bronze` stay literal and unaliased (real copper/bronze-metal exceptions mixed into otherwise-tone
-data, indistinguishable from raw text alone). Shape/material/finish are extracted together in one
-longest-phrase-first pass across all three vocabularies (`extractCategorizedPhrases`), not as three
-separate sequential passes — sequential extraction let a short phrase from an earlier category
-(`"Gold"`, a material) steal a token that would otherwise form a longer, more specific phrase in a
-later category (`"Rose Gold"`, a finish), a real bug the seeding surfaced. See
+**`nib_shapes`/`nib_materials`/`finishes` are pre-seeded** (`NIB_SHAPE_SEED`/`NIB_MATERIAL_SEED`/
+`FINISH_SEED` in `schema.ts`) with Ken's confirmed real vocabulary, not left empty. `finishes` is
+shared with pens' own Trim Color: `Gold`/`Silver` are seeded as `Gold Tone`/`Silver Tone` with
+`Gold`/`Silver` as raw-text aliases; `Copper`/`Bronze` stay literal and unaliased. Shape/material/
+finish are extracted from `Nib` text together, in one longest-phrase-first pass across all three
+vocabularies (`extractCategorizedPhrases`), not as three separate sequential passes. See
 [[docs/adr/2026-07-13-nib-shape-material-finish-vocabulary-is-pre-seeded]].
 
-**`nibs.nibmeister_id` is populated by import, via the same `NIBMEISTER_GRIND` mechanism.**
-"Journaler" (Gena Saloreno), "Scribe" (Joshua Lax), "Imperial" (Kirk Speer), and "Seagul"/"Seagull"
-(Monty Winnfield) are publicly-known nibmeister grinds popularized through Esterbrook — each a real
-shape word resolving through the seeded vocabulary above, but always `is_custom_grind: true` (an
-aftermarket modification, not factory stock) with `brand_id`/`manufacturer_id` staying null,
-distinct from `POINT_SIZE_MAKER`'s manufacturer-branded point sizes. Journaler/Scribe each imply
-their own point size (Medium/Broad) when no width is given; Imperial/Seagul have none, so bare text
-correctly stays `unparseable_nib`. "Long Knife"/"Long Blade" (interchangeable, an Architect-type
-shape) look similar but aren't a nibmeister grind — no nibmeister was named, so it's just an
-ordinary seeded shape, no forced `is_custom_grind`, no `nibmeister_id`.
-
-**`nibs.is_flex`** is a separate boolean, independent of `custom_name`/`is_custom_grind` —
-Noodler's markets `"Flex"` as the nib's own factory name/type (FPC's `Nib` column is literally just
-`"Flex"`, no separate width given), which also happens to describe real flex behavior. The name
-resolves as an ordinary point size (`NIB_POINT_SIZE_SEED`, no brand/manufacturer/shape implied);
-`is_flex` is set independently whenever the point size is `"Flex"`.
-
-**A leftover word (after shape/material/finish extraction) can itself name the nib's own brand**,
-independent of the pen's brand — `LEFTOVER_BRAND_WORD` (`"Hongdian"` confirmed real: a pen from one
-brand can come with a nib branded by a completely different one), checked before falling through to
-`custom_name`. `manufacturer_id != brand_id`, both known (a JoWo blank engraved/ground uniquely for
-Esterbrook/Franklin-Christoph/Opus 88) is a real, confirmed future case with no textual signal in
-FPC's data to derive automatically — will need manual correction once Nib CRUD exists, not
-buildable from import alone.
+**`nibs.nibmeister_id`/`nibs.is_flex` are populated by import.** `NIBMEISTER_GRIND` in
+`nib-parser.ts` maps four publicly-known nibmeister grinds to their nibmeister — Journaler (Gena
+Saloreno), Scribe (Joshua Lax), Imperial (Kirk Speer), Seagull (Monty Winnfield) — each forcing
+`is_custom_grind: true` with `brand_id`/`manufacturer_id` null, distinct from `POINT_SIZE_MAKER`'s
+manufacturer-branded point sizes above. `is_flex` is set independently whenever the point size
+resolves to `"Flex"`. `LEFTOVER_BRAND_WORD` recognizes a leftover word as the nib's own brand
+(`"Hongdian"`) instead of falling through to `custom_name`. See
+[[docs/adr/2026-07-13-nib-shape-material-finish-vocabulary-is-pre-seeded]].
 
 **Matching is always case-insensitive; recording always writes canonical casing, never raw input
-casing.** True everywhere already (`resolveOrFlag`'s exact/alias/fuzzy matching, shape/material/
-finish extraction, `NIBMEISTER_GRIND`/`LEFTOVER_BRAND_WORD`) except point-size matching, which was
-case-sensitive end-to-end — fixed via `findCanonicalPointSize` (nib-parser.ts): matched
-case-insensitively, always returns the seed's own exact casing.
-
-See [[docs/adr/2026-07-13-nib-shape-material-finish-vocabulary-is-pre-seeded]].
+casing** — true throughout the nib-parsing/resolution pipeline (`resolveOrFlag`, shape/material/
+finish extraction, `NIBMEISTER_GRIND`/`LEFTOVER_BRAND_WORD`, `findCanonicalPointSize`). See
+[[docs/adr/2026-07-13-nib-shape-material-finish-vocabulary-is-pre-seeded]].
 
 ## Computed values are never stored twice
 
@@ -194,22 +160,14 @@ commit time (using each field's now-final resolved id) for whatever wasn't — m
 Model/Line resolution itself already defers until Brand is known. A `matchType: 'batch'`
 candidate's `id` is the row's source CSV line, not its raw array position — something a reviewer
 can actually locate. See [[docs/adr/2026-07-10-identity-key-is-resolved-not-raw-text]] (supersedes
-[[docs/adr/2026-07-10-identity-matching-audit]]'s composite-string approach — found not to survive
-contact with a real ~540-row collection, where many genuinely distinct items legitimately share
-most fields by design).
+[[docs/adr/2026-07-10-identity-matching-audit]]'s composite-string approach).
 
 **A commit-time re-flag (a correction that's still ambiguous, or a model/line whose brand context
 was only just settled) updates the *same* `import_flagged_items` row rather than inserting a new
 one** — `row_data`/`flag_type`/`candidate_info` replaced, `decision`/`decision_target_id`/
-`decided_at` reset to null, `field_decisions` preserved (an already-decided field on this row must
-still apply once a different field is what's newly ambiguous). Inserting a new row instead — the
-original behavior — left the original row's stale `decision` in place, so every retry re-ran its
-resolution from scratch and re-flagged the same ambiguity again, permanently blocking the whole
-attempt no matter how the newly-inserted row was decided. Deferred model/line resolution (brand
-context wasn't known at parse time) now consults `field_decisions` the same way every other field
-does (`resolveDeferredField`, mirroring `applyDecision`) instead of only ever resolving fresh or
-re-flagging — without this, an in-place-updated re-flag would still never be actionable. See
-[[docs/adr/2026-07-10-re-flags-update-the-original-row]].
+`decided_at` reset to null, `field_decisions` preserved. Deferred model/line resolution consults
+`field_decisions` the same way every other field does (`resolveDeferredField`, mirroring
+`applyDecision`). See [[docs/adr/2026-07-10-re-flags-update-the-original-row]].
 
 **A duplicate match, an unparseable nib, and a flagged field are independent signals — a row can
 trip more than one at once**, since duplicate detection, field resolution, and nib parsing are
@@ -232,9 +190,7 @@ malformed `Nib` could commit silently with no nib and no error. See
 - Vitest coverage gated at 90% minimum in CI, not just reported. See
   [[docs/adr/2026-07-08-coverage-threshold-90-percent]]. That's the CI gate, not the actual bar —
   every uncovered line in a coverage report gets read and either covered or given a specific,
-  written reason, never silently accepted because the aggregate percentage already cleared 90%.
-  Two real bugs (a non-functional existing-catalog duplicate check, a crash on an unrecognized nib
-  base size) were found exactly this way, not by "tests pass." See
+  written reason, never silently accepted because the aggregate percentage already cleared 90%. See
   [[docs/adr/2026-07-10-chase-coverage-gaps-to-100-percent]].
 - Fixture CSVs are many small, targeted files (one per condition), never one monolithic file.
 - Test files (`*.test.ts`, `*.integration.test.ts`) sit next to the source they test
