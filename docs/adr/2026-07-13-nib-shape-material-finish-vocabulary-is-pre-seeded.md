@@ -22,12 +22,14 @@ be recognized as structured data, only as opaque custom-grind text.
 Seed `nib_shapes`, `nib_materials`, and `finishes` with what's already confirmed in Ken's real
 `collected_pens.csv`/`collected_pens.csv` Trim Color column (`NIB_SHAPE_SEED`/`NIB_MATERIAL_SEED`/
 `FINISH_SEED` in `schema.ts`, migration `0009`):
-- `nib_shapes`: Round, Stub, Cursive Italic, Cursive Smooth Italic, Architect, Italic, Oblique —
-  plus a `Journaler` → `Cursive Smooth Italic` alias. phase1-plan.md's own original example named
-  this same alias but guessed plain "Cursive Italic" as the target; corrected once Ken confirmed
-  the actual definition: "Journaler" is, by definition, a Medium Cursive Smooth Italic — both the
-  shape *and* an implied Medium point size when no width is given anywhere in the text (the latter
-  handled by `nib-parser.ts`'s `SHAPE_IMPLIED_POINT_SIZE`, not the migration).
+- `nib_shapes`: Round, Stub, Cursive Italic, Cursive Smooth Italic, Architect, Italic, Oblique,
+  Scribe, Imperial. "Journaler"/"Scribe"/"Imperial" are publicly-known nibmeister grinds
+  popularized through Esterbrook (Ken, 2026-07-13), not manufacturer stock shapes — see
+  `nib-parser.ts`'s `NIBMEISTER_GRIND` and the nibmeister paragraph below. "Journaler" resolves via
+  a `Journaler` → `Cursive Smooth Italic` alias (phase1-plan.md's own original example named this
+  same alias but guessed plain "Cursive Italic" as the target — corrected); "Scribe" and "Imperial"
+  (a Stub variant, half-round and flat on top) are their own shape names directly, same as
+  "Architect" — no alias layer needed.
 - `nib_materials`: Steel, Gold, Titanium.
 - `finishes`: shared with pens' own Trim Color (same table), seeded with the combined real
   vocabulary. `Gold`/`Silver` are seeded as **`Gold Tone`/`Silver Tone`** with `Gold`/`Silver` as
@@ -42,6 +44,23 @@ Seed `nib_shapes`, `nib_materials`, and `finishes` with what's already confirmed
 This is explicitly a starting list, not exhaustive — a genuinely new word still works exactly as
 before (falls through to `custom_name`, correctable later), this just closes the gap for what's
 already known.
+
+**`nibs.nibmeister_id` is populated by import for the first time.** The field already existed
+(`nibmeister_id` → `vendors`) but nothing in `fpc-import.ts` had ever set it — every nibmeister
+fact was silently lost. `NIBMEISTER_GRIND` in `nib-parser.ts` maps each nibmeister-grind shape word
+to its nibmeister (and, for Journaler/Scribe, an implied point size when no width is given —
+Imperial has none of its own, so bare `"Imperial"` still correctly stays `unparseable_nib`):
+Journaler is Gena Saloreno's grind, Scribe is Joshua Lax's, Imperial is Kirk Speer's. The
+nibmeister fact applies whenever the word appears at all, independent of whether its point size is
+explicit or implied (`"M Journaler"` is still Gena Saloreno's grind). Resolved through the same
+`resolveOrFlag('vendor', ...)` mechanism as any other vendor, at all three of the places
+`nib_brand`/`nib_manufacturer` already are (parse-time resolution, unparseable-nib re-resolution,
+commit-time creation) — no new resolution mechanism. A nibmeister grind is always
+`is_custom_grind: true`, even though its shape resolves via known vocabulary just like a
+manufacturer's stock shape — it's still an aftermarket modification of someone else's blank, not
+how the nib came from the factory. `brand_id`/`manufacturer_id` stay null for these — distinct from
+`POINT_SIZE_MAKER`'s manufacturer-branded point sizes (Signature/Zoom/Music/CM), which are a
+maker's own stock design, never `is_custom_grind`.
 
 **A real, independent bug surfaced while adding this seed data**, not just a data gap: seeding
 `Gold` as a `nib_material` broke `"F Rose Gold"` parsing — `materialName` resolved to `"Gold"` and

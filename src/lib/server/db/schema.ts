@@ -220,7 +220,9 @@ export const NIB_SHAPE_SEED = [
 	'Cursive Smooth Italic',
 	'Architect',
 	'Italic',
-	'Oblique'
+	'Oblique',
+	'Scribe',
+	'Imperial'
 ] as const;
 export const NIB_MATERIAL_SEED = ['Steel', 'Gold', 'Titanium'] as const;
 // Gold/Silver are intentionally absent as canonical names — Ken's real trim

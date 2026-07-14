@@ -101,6 +101,15 @@ separate sequential passes — sequential extraction let a short phrase from an 
 later category (`"Rose Gold"`, a finish), a real bug the seeding surfaced. See
 [[docs/adr/2026-07-13-nib-shape-material-finish-vocabulary-is-pre-seeded]].
 
+**`nibs.nibmeister_id` is populated by import, via the same `NIBMEISTER_GRIND` mechanism.**
+"Journaler" (Gena Saloreno), "Scribe" (Joshua Lax), and "Imperial" (Kirk Speer) are publicly-known
+nibmeister grinds popularized through Esterbrook — each a real shape word resolving through the
+seeded vocabulary above, but always `is_custom_grind: true` (an aftermarket modification, not
+factory stock) with `brand_id`/`manufacturer_id` staying null, distinct from `POINT_SIZE_MAKER`'s
+manufacturer-branded point sizes. Journaler/Scribe each imply their own point size (Medium/Broad)
+when no width is given; Imperial has none, so bare `"Imperial"` correctly stays `unparseable_nib`.
+See [[docs/adr/2026-07-13-nib-shape-material-finish-vocabulary-is-pre-seeded]].
+
 ## Computed values are never stored twice
 
 A value derived from other rows is computed at read time, never written redundantly to a column.

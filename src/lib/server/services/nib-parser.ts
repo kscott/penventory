@@ -35,6 +35,7 @@ export type ParsedNibText =
 			flags: NibFieldFlag[];
 			brandName: string | null;
 			manufacturerName: string | null;
+			nibmeisterName: string | null;
 	  };
 
 // A handful of point sizes are a specific vertically-integrated maker's own
@@ -53,13 +54,29 @@ const POINT_SIZE_MAKER: Record<string, { brand: string; manufacturer: string; sh
 	Music: { brand: 'Sailor', manufacturer: 'Sailor' }
 };
 
-// The reverse of POINT_SIZE_MAKER: a shape *word* that implies its own
-// point size, by definition, when no separate width is given anywhere in
-// the text. "Journaler" is always Medium (Ken, 2026-07-13) — the shape
-// itself is resolved normally afterward via the "Journaler" ->
-// "Cursive Smooth Italic" alias, same mechanism as any other shape word.
-const SHAPE_IMPLIED_POINT_SIZE: Record<string, string> = {
-	Journaler: 'M'
+// Some shape words are themselves the name of a publicly-known, popularized
+// nibmeister grind — not a manufacturer's own stock shape, even though
+// (like any other shape word) they resolve via alias/exact-match to a
+// canonical nib_shapes entry. Confirmed public, industry-known terminology
+// popularized through Esterbrook (Ken, 2026-07-13): "Journaler" (Gena
+// Saloreno, implies Medium), "Scribe" (Joshua Lax, implies Broad), and
+// "Imperial" (Kirk Speer — a Stub variant, half-round and flat on top,
+// distinct enough from plain Stub to be its own seeded shape rather than an
+// alias to it) — Imperial has no implied point size of its own, unlike the
+// other two; bare "Imperial" with no width given anywhere still correctly
+// stays unparseable, needing a real correction, not a guess. The
+// nibmeister fact applies whenever the word appears at all, not only when
+// its point size is the implied one — "M Journaler" is still Gena
+// Saloreno's grind. Distinct from POINT_SIZE_MAKER's manufacturer-branded
+// point sizes (Signature/Zoom/Music/CM — a maker's own stock design:
+// brand_id/manufacturer_id set, never is_custom_grind): these are a
+// nibmeister's aftermarket modification of someone else's blank —
+// nibmeister_id set instead, is_custom_grind always true, brand_id/
+// manufacturer_id stay unknown/null.
+const NIBMEISTER_GRIND: Record<string, { impliedPointSize?: string; nibmeister: string }> = {
+	Journaler: { impliedPointSize: 'M', nibmeister: 'Gena Saloreno' },
+	Scribe: { impliedPointSize: 'B', nibmeister: 'Joshua Lax' },
+	Imperial: { nibmeister: 'Kirk Speer' }
 };
 
 // One phrase per candidate name (canonical or alias), longest-word-count
@@ -176,6 +193,16 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 
 	let tokens = trimmed.split(/\s+/);
 
+	// Checked up front, against the original token list — a nibmeister grind
+	// word's nibmeister fact applies whenever it appears at all, whether or
+	// not its own point size happens to be given explicitly elsewhere
+	// ("M Journaler" is still Gena Saloreno's grind, not just bare
+	// "Journaler"). See NIBMEISTER_GRIND above.
+	const nibmeisterEntry = Object.entries(NIBMEISTER_GRIND).find(([shape]) =>
+		tokens.some((t) => t.toLowerCase() === shape.toLowerCase())
+	);
+	const nibmeisterName = nibmeisterEntry?.[1].nibmeister ?? null;
+
 	// "Oblique" is a real nib shape, but unlike every other shape word it's
 	// never written as its own separate token — it's glued directly onto a
 	// width code with no space ("OM" = Oblique + Medium; also seen combined
@@ -196,20 +223,14 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 		);
 		isOblique = pointSizeIndex !== -1;
 	}
-	// Some shape words carry their own implied point size by convention, even
-	// with no separate width given anywhere in the text — "Journaler" is
-	// always Medium, by definition (Ken, 2026-07-13). Checked only after
-	// both real point-size checks above fail, and doesn't consume the
-	// token — it's left in place so the shape-matching step below still
-	// finds and resolves it via the "Journaler" -> "Cursive Smooth Italic"
-	// alias, the same as when a width is given explicitly ("M Journaler").
-	let impliedPointSize: string | null = null;
-	if (pointSizeIndex === -1) {
-		const impliedEntry = Object.entries(SHAPE_IMPLIED_POINT_SIZE).find(([shape]) =>
-			tokens.some((t) => t.toLowerCase() === shape.toLowerCase())
-		);
-		if (impliedEntry) impliedPointSize = impliedEntry[1];
-	}
+	// A nibmeister grind word carries its own implied point size, by
+	// definition, when no separate width is given anywhere in the text.
+	// Checked only after both real point-size checks above fail, and
+	// doesn't consume the token — it's left in place so the shape-matching
+	// step below still finds and resolves it via alias/exact-match, the
+	// same as when a width is given explicitly.
+	const impliedPointSize =
+		pointSizeIndex === -1 ? (nibmeisterEntry?.[1].impliedPointSize ?? null) : null;
 	if (pointSizeIndex === -1 && !impliedPointSize) {
 		const nearMiss = tokens.find((t) =>
 			NIB_POINT_SIZE_SEED.some((size) => isNearDuplicate(t.toLowerCase(), size.toLowerCase()))
@@ -269,7 +290,11 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 	const finishName = extracted.matches.finish ?? null;
 
 	let customName: string | null = null;
-	let isCustomGrind = false;
+	// A nibmeister grind is always a custom grind, even though its shape
+	// resolves via known vocabulary just like a manufacturer's stock
+	// shape — it's still an aftermarket modification, not how the nib
+	// came from the factory.
+	let isCustomGrind = nibmeisterName !== null;
 	if (tokens.length > 0) {
 		const leftover = tokens.join(' ');
 		const allKnownNames = [...shapeVocabulary, ...materialVocabulary, ...finishVocabulary].map(
@@ -300,6 +325,7 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 		isCustomGrind,
 		flags,
 		brandName: maker?.brand ?? null,
-		manufacturerName: maker?.manufacturer ?? null
+		manufacturerName: maker?.manufacturer ?? null,
+		nibmeisterName
 	};
 }

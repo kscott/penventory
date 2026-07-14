@@ -44,7 +44,8 @@ describe('parseNibText', () => {
 			isCustomGrind: false,
 			flags: [],
 			brandName: null,
-			manufacturerName: null
+			manufacturerName: null,
+			nibmeisterName: null
 		});
 	});
 
@@ -84,13 +85,14 @@ describe('parseNibText', () => {
 		});
 	});
 
-	it('the seeded "Journaler" alias resolves to canonical shape "Cursive Smooth Italic" out of the box, the same way brand aliases resolve', () => {
+	it('the seeded "Journaler" alias resolves to canonical shape "Cursive Smooth Italic" out of the box, the same way brand aliases resolve — and is always a custom grind (Gena Saloreno)', () => {
 		const result = parseNibText(db, 'M Journaler');
 		expect(result).toMatchObject({
 			kind: 'parsed',
 			shapeName: 'Cursive Smooth Italic',
 			customName: null,
-			isCustomGrind: false
+			isCustomGrind: true,
+			nibmeisterName: 'Gena Saloreno'
 		});
 	});
 
@@ -149,7 +151,7 @@ describe('parseNibText', () => {
 	});
 
 	it('a bare custom grind name with no point size anywhere is flagged, not defaulted', () => {
-		const result = parseNibText(db, 'Scribe');
+		const result = parseNibText(db, 'Windmill');
 		expect(result.kind).toBe('unparseable');
 	});
 
@@ -160,7 +162,39 @@ describe('parseNibText', () => {
 			pointSize: 'M',
 			shapeName: 'Cursive Smooth Italic',
 			customName: null,
-			isCustomGrind: false
+			isCustomGrind: true,
+			nibmeisterName: 'Gena Saloreno'
+		});
+	});
+
+	it('bare "Scribe" with no point size given anywhere implies Broad, by definition (Joshua Lax)', () => {
+		const result = parseNibText(db, 'Scribe');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			pointSize: 'B',
+			shapeName: 'Scribe',
+			customName: null,
+			isCustomGrind: true,
+			nibmeisterName: 'Joshua Lax'
+		});
+	});
+
+	it('"Imperial" has no implied point size of its own — bare "Imperial" still correctly stays unparseable', () => {
+		const result = parseNibText(db, 'Imperial');
+		expect(result.kind).toBe('unparseable');
+	});
+
+	it('"Imperial" with an explicit point size resolves with its shape and nibmeister (Kirk Speer), still a custom grind', () => {
+		const result = parseNibText(db, 'M Imperial');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			pointSize: 'M',
+			shapeName: 'Imperial',
+			customName: null,
+			isCustomGrind: true,
+			nibmeisterName: 'Kirk Speer',
+			brandName: null,
+			manufacturerName: null
 		});
 	});
 

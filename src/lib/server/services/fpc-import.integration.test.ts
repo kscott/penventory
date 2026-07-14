@@ -23,7 +23,8 @@ import {
 	nibs,
 	pen_materials,
 	pen_nibs,
-	pens
+	pens,
+	vendors
 } from '../db/schema';
 import type { FieldDecisions } from './decision-resolution';
 import { CommitRefusedError, commitImportAttempt, parseCatalogImport } from './fpc-import';
@@ -1045,6 +1046,71 @@ describe('fpc-import (parse + commit)', () => {
 			const candidateInfo = items[0].candidate_info as { fields: Record<string, unknown> };
 			expect(candidateInfo.fields.nib_brand).toBeDefined();
 			expect(candidateInfo.fields.nib_manufacturer).toBeDefined();
+		});
+
+		it('commits a nibmeister grind ("M Journaler") with nibmeister_id set — a real field, never populated by import before now', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-nibmeister-grind'),
+				inksCSV: fixture('inks', 'empty')
+			});
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const nib = db.select().from(nibs).all()[0];
+			expect(nib.is_custom_grind).toBe(true);
+			const nibmeister = db
+				.select()
+				.from(vendors)
+				.all()
+				.find((v) => v.id === nib.nibmeister_id!);
+			expect(nibmeister?.name).toBe('Gena Saloreno');
+		});
+
+		it('an unparseable_nib corrected to a nibmeister grind resolves nibmeister_id through the re-resolution path too', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-malformed-token'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Nib', 'M Imperial');
+			decideRow(item.id, 'import');
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const nib = db.select().from(nibs).all()[0];
+			expect(nib.is_custom_grind).toBe(true);
+			const nibmeister = db
+				.select()
+				.from(vendors)
+				.all()
+				.find((v) => v.id === nib.nibmeister_id!);
+			expect(nibmeister?.name).toBe('Kirk Speer');
+		});
+
+		it('a nibmeister name that fuzzy-matches an existing typo gets re-flagged, not silently created', async () => {
+			// vendors has no seed data at all, same as brands — a real,
+			// reachable ambiguity.
+			db.insert(vendors).values({ name: 'Gena Salorno' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-malformed-token'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Nib', 'M Journaler');
+			decideRow(item.id, 'import');
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+
+			expect(db.select().from(pens).all()).toEqual([]);
+			const items = flaggedItemsFor(attemptId);
+			expect(items).toHaveLength(1);
+			expect(items[0].id).toBe(item.id);
+			expect(items[0].flag_type).toBe('needs_confirmation');
+			const candidateInfo = items[0].candidate_info as { fields: Record<string, unknown> };
+			expect(candidateInfo.fields.nibmeister).toBeDefined();
 		});
 
 		it('an unparseable_nib row can be skipped, committing the pen without a nib', async () => {

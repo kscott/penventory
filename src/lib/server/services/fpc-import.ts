@@ -24,6 +24,7 @@ import {
 	pen_materials,
 	pen_nibs,
 	pens,
+	vendors,
 	type AliasableType,
 	type ImportFlagType
 } from '../db/schema';
@@ -94,6 +95,7 @@ type PenRowData = {
 	nibFinish: ResolveResult | null;
 	nibBrand: ResolveResult | null;
 	nibManufacturer: ResolveResult | null;
+	nibmeister: ResolveResult | null;
 };
 
 type InkRowData = {
@@ -292,6 +294,7 @@ type PenFieldResolution = {
 	nibFinish: ResolveResult | null;
 	nibBrand: ResolveResult | null;
 	nibManufacturer: ResolveResult | null;
+	nibmeister: ResolveResult | null;
 };
 
 function resolvePenFields(db: Db, raw: RawCsvRow): PenFieldResolution {
@@ -308,12 +311,14 @@ function resolvePenFields(db: Db, raw: RawCsvRow): PenFieldResolution {
 	let nibFinish: ResolveResult | null = null;
 	let nibBrand: ResolveResult | null = null;
 	let nibManufacturer: ResolveResult | null = null;
+	let nibmeister: ResolveResult | null = null;
 	if (nib.kind === 'parsed') {
 		nibMaterial = resolveOrFlag(db, 'nib_material', nib.materialName);
 		nibShape = resolveOrFlag(db, 'nib_shape', nib.shapeName);
 		if (nib.finishName) nibFinish = resolveOrFlag(db, 'finish', nib.finishName);
 		if (nib.brandName) nibBrand = resolveOrFlag(db, 'brand', nib.brandName);
 		if (nib.manufacturerName) nibManufacturer = resolveOrFlag(db, 'brand', nib.manufacturerName);
+		if (nib.nibmeisterName) nibmeister = resolveOrFlag(db, 'vendor', nib.nibmeisterName);
 	}
 
 	return {
@@ -327,7 +332,8 @@ function resolvePenFields(db: Db, raw: RawCsvRow): PenFieldResolution {
 		nibShape,
 		nibFinish,
 		nibBrand,
-		nibManufacturer
+		nibManufacturer,
+		nibmeister
 	};
 }
 
@@ -346,7 +352,8 @@ function penFlaggableResolutions(
 		...(resolution.nibBrand ? [{ field: 'nib_brand', result: resolution.nibBrand }] : []),
 		...(resolution.nibManufacturer
 			? [{ field: 'nib_manufacturer', result: resolution.nibManufacturer }]
-			: [])
+			: []),
+		...(resolution.nibmeister ? [{ field: 'nibmeister', result: resolution.nibmeister }] : [])
 	];
 }
 
@@ -754,12 +761,14 @@ function resolveRowForCommit(
 		let nibFinish: ResolveResult | null = null;
 		let nibBrand: ResolveResult | null = null;
 		let nibManufacturer: ResolveResult | null = null;
+		let nibmeister: ResolveResult | null = null;
 		if (nib.kind === 'parsed') {
 			nibMaterial = resolveOrFlag(tx, 'nib_material', nib.materialName);
 			nibShape = resolveOrFlag(tx, 'nib_shape', nib.shapeName);
 			if (nib.finishName) nibFinish = resolveOrFlag(tx, 'finish', nib.finishName);
 			if (nib.brandName) nibBrand = resolveOrFlag(tx, 'brand', nib.brandName);
 			if (nib.manufacturerName) nibManufacturer = resolveOrFlag(tx, 'brand', nib.manufacturerName);
+			if (nib.nibmeisterName) nibmeister = resolveOrFlag(tx, 'vendor', nib.nibmeisterName);
 		}
 		const updatedRowData: PenRowData = {
 			...rowData,
@@ -768,14 +777,16 @@ function resolveRowForCommit(
 			nibShape,
 			nibFinish,
 			nibBrand,
-			nibManufacturer
+			nibManufacturer,
+			nibmeister
 		};
 		const flaggedFields = fieldsNeedingConfirmation([
 			...(nibMaterial ? [{ field: 'nib_material', result: nibMaterial }] : []),
 			...(nibShape ? [{ field: 'nib_shape', result: nibShape }] : []),
 			...(nibFinish ? [{ field: 'nib_finish', result: nibFinish }] : []),
 			...(nibBrand ? [{ field: 'nib_brand', result: nibBrand }] : []),
-			...(nibManufacturer ? [{ field: 'nib_manufacturer', result: nibManufacturer }] : [])
+			...(nibManufacturer ? [{ field: 'nib_manufacturer', result: nibManufacturer }] : []),
+			...(nibmeister ? [{ field: 'nibmeister', result: nibmeister }] : [])
 		]);
 		const flag = determineFlag([], nib, flaggedFields);
 		if (flag) {
@@ -1112,6 +1123,22 @@ function runCommitTransaction(
 								brands
 							)
 						: null;
+					// nibmeister_id is set the same way — genuinely known only
+					// when the shape itself is a publicly-known nibmeister
+					// grind (Journaler/Scribe/Imperial). Existing nib CRUD
+					// (Phase 3/4) is still the only path for any other nib's
+					// nibmeister to ever get recorded.
+					const nibmeisterId = rowData.nib.nibmeisterName
+						? applyDecision(
+								tx,
+								item,
+								'nibmeister',
+								'vendor',
+								rowData.nib.nibmeisterName,
+								undefined,
+								vendors
+							)
+						: null;
 					const nib = create(tx, nibs, {
 						brand_id: nibBrandId,
 						manufacturer_id: nibManufacturerId,
@@ -1121,6 +1148,7 @@ function runCommitTransaction(
 						point_size_id: pointSize!.id,
 						shape_id: nibShapeId,
 						finish_id: nibFinishId,
+						nibmeister_id: nibmeisterId,
 						custom_name: rowData.nib.customName,
 						is_custom_grind: rowData.nib.isCustomGrind
 					});
