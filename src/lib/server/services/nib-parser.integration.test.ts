@@ -265,6 +265,25 @@ describe('parseNibText', () => {
 		expect(result).toMatchObject({ isFlex: false });
 	});
 
+	it('a leftover word naming a real nib brand ("Hongdian") sets brandName instead of falling through to custom_name', () => {
+		const result = parseNibText(db, 'F Hongdian');
+		expect(result).toMatchObject({
+			kind: 'parsed',
+			pointSize: 'F',
+			shapeName: 'Round',
+			customName: null,
+			isCustomGrind: false,
+			brandName: 'Hongdian',
+			manufacturerName: null,
+			nibmeisterName: null
+		});
+	});
+
+	it('a leftover brand word is matched case-insensitively, same as every other leftover-word lookup', () => {
+		const result = parseNibText(db, 'F hongdian');
+		expect(result).toMatchObject({ brandName: 'Hongdian', customName: null, isCustomGrind: false });
+	});
+
 	it('a leftover token that near-matches a known shape/material/finish is flagged rather than treated as a custom name', () => {
 		// Cursive Italic is pre-seeded by migration now — no manual insert needed.
 		const result = parseNibText(db, 'F Cursive Itallic');
@@ -406,5 +425,15 @@ describe('parseNibText', () => {
 	it('a bare "O" alone is not treated as an Oblique-prefixed width — no known size remains after stripping it', () => {
 		const result = parseNibText(db, 'O');
 		expect(result.kind).toBe('unparseable');
+	});
+
+	it('point size matching is case-insensitive but always records the seed\'s canonical casing — lowercase "flex" still resolves to "Flex"', () => {
+		const result = parseNibText(db, 'flex');
+		expect(result).toMatchObject({ kind: 'parsed', pointSize: 'Flex', isFlex: true });
+	});
+
+	it('the Oblique-prefix decomposition is case-insensitive on both the "o" prefix and the remaining width', () => {
+		const result = parseNibText(db, 'om 14K');
+		expect(result).toMatchObject({ kind: 'parsed', pointSize: 'M', shapeName: 'Oblique' });
 	});
 });

@@ -1048,6 +1048,53 @@ describe('fpc-import (parse + commit)', () => {
 			expect(candidateInfo.fields.nib_manufacturer).toBeDefined();
 		});
 
+		it("nib_brand and nib_manufacturer, both flagged on the same row, resolve independently — deciding them differently proves neither reuses the other's decision", async () => {
+			// Both derive from the same raw name ("Pilot", via Signature) and
+			// both independently fuzzy-collide against the same existing
+			// "Piolt" typo — a real case of two nib sub-fields ambiguous on one
+			// row at once, same class of proof pens' Brand+Material+TrimColor
+			// combination already has, never previously exercised at the nib
+			// sub-field level. Two commit rounds: correcting an unparseable_nib
+			// re-resolves fresh (ignoring any pre-set field_decisions, same as
+			// the brand-fuzzy-match test above) and re-flags in place; only on
+			// the *second* round does applyDecision actually consult
+			// field_decisions — same two-round shape as the model/line
+			// deferred-resolution tests.
+			const existingBrand = db.insert(brands).values({ name: 'Piolt' }).returning().get();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-malformed-token'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Nib', 'Signature 14K');
+			decideRow(item.id, 'import');
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+			const reflagged = flaggedItemsFor(attemptId)[0];
+			expect(reflagged.id).toBe(item.id);
+			expect(reflagged.flag_type).toBe('needs_confirmation');
+
+			decideField(item.id, 'nib_manufacturer', 'merge_into', existingBrand.id);
+			decideField(item.id, 'nib_brand', 'import');
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(1);
+
+			const nib = db.select().from(nibs).all()[0];
+			expect(nib.manufacturer_id).toBe(existingBrand.id);
+			expect(nib.brand_id).not.toBeNull();
+			expect(nib.brand_id).not.toBe(existingBrand.id);
+			const newBrand = db
+				.select()
+				.from(brands)
+				.all()
+				.find((b) => b.id === nib.brand_id!);
+			expect(newBrand?.name).toBe('Pilot');
+		});
+
 		it('commits a nibmeister grind ("M Journaler") with nibmeister_id set — a real field, never populated by import before now', async () => {
 			const { attemptId } = parseCatalogImport(db, {
 				pensCSV: fixture('pens', 'nib-nibmeister-grind'),

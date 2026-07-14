@@ -117,6 +117,21 @@ Noodler's markets `"Flex"` as the nib's own factory name/type (FPC's `Nib` colum
 `"Flex"`, no separate width given), which also happens to describe real flex behavior. The name
 resolves as an ordinary point size (`NIB_POINT_SIZE_SEED`, no brand/manufacturer/shape implied);
 `is_flex` is set independently whenever the point size is `"Flex"`.
+
+**A leftover word (after shape/material/finish extraction) can itself name the nib's own brand**,
+independent of the pen's brand — `LEFTOVER_BRAND_WORD` (`"Hongdian"` confirmed real: a pen from one
+brand can come with a nib branded by a completely different one), checked before falling through to
+`custom_name`. `manufacturer_id != brand_id`, both known (a JoWo blank engraved/ground uniquely for
+Esterbrook/Franklin-Christoph/Opus 88) is a real, confirmed future case with no textual signal in
+FPC's data to derive automatically — will need manual correction once Nib CRUD exists, not
+buildable from import alone.
+
+**Matching is always case-insensitive; recording always writes canonical casing, never raw input
+casing.** True everywhere already (`resolveOrFlag`'s exact/alias/fuzzy matching, shape/material/
+finish extraction, `NIBMEISTER_GRIND`/`LEFTOVER_BRAND_WORD`) except point-size matching, which was
+case-sensitive end-to-end — fixed via `findCanonicalPointSize` (nib-parser.ts): matched
+case-insensitively, always returns the seed's own exact casing.
+
 See [[docs/adr/2026-07-13-nib-shape-material-finish-vocabulary-is-pre-seeded]].
 
 ## Computed values are never stored twice

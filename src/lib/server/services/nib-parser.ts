@@ -100,6 +100,20 @@ const NIBMEISTER_GRIND: Record<string, { impliedPointSize?: string; nibmeister: 
 	Seagul: { nibmeister: 'Monty Winnfield' }
 };
 
+// A word left over after point size/shape/material/finish are all otherwise
+// extracted can itself be a real nib brand — a pen from one brand can come
+// with a nib branded by a completely different one. Confirmed real case
+// (Ken, 2026-07-13): "F Hongdian" is a Hongdian-branded nib on a
+// different-brand pen body, not a custom grind description. Distinct from
+// POINT_SIZE_MAKER (keyed by the point size itself) and NIBMEISTER_GRIND
+// (keyed by a shape word) — this is keyed by whatever's left over once
+// everything else has already been resolved. manufacturer stays
+// unspecified (null) here — nothing confirms Hongdian makes its own nibs
+// in-house the way Pilot/Sailor do; only the brand fact is known.
+const LEFTOVER_BRAND_WORD: Record<string, string> = {
+	Hongdian: 'Hongdian'
+};
+
 // One phrase per candidate name (canonical or alias), longest-word-count
 // first — so "Cursive Smooth Italic" is tried before "Cursive Italic" before
 // "Italic", never matching a shorter phrase that's actually a substring of a
@@ -201,6 +215,15 @@ function findExactName(db: Db, table: typeof nib_base_sizes | typeof nib_puritie
 	return db.select().from(table).where(eq(table.name, name)).get();
 }
 
+// Matched case-insensitively but always returns the seed's own canonical
+// casing — matching insensitive, recording canonical, never whatever casing
+// the raw text happened to use (Ken, 2026-07-13).
+function findCanonicalPointSize(raw: string): string | undefined {
+	return (NIB_POINT_SIZE_SEED as readonly string[]).find(
+		(size) => size.toLowerCase() === raw.toLowerCase()
+	);
+}
+
 // Confirmed against Ken's real FPC export — see phase1-plan.md step 6 and the
 // step's implementation plan. Point size is the one fact a nib record can't
 // safely proceed without: no default exists for it, unlike base size/
@@ -231,16 +254,14 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 	// after a direct match fails, so it can never shadow a genuine seeded
 	// code that happens to start with "O" (there isn't one today, but this
 	// keeps a direct match authoritative if one's ever added).
-	let pointSizeIndex = tokens.findIndex((t) =>
-		(NIB_POINT_SIZE_SEED as readonly string[]).includes(t)
-	);
+	let pointSizeIndex = tokens.findIndex((t) => findCanonicalPointSize(t) !== undefined);
 	let isOblique = false;
 	if (pointSizeIndex === -1) {
 		pointSizeIndex = tokens.findIndex(
 			(t) =>
 				t.length > 1 &&
-				t.startsWith('O') &&
-				(NIB_POINT_SIZE_SEED as readonly string[]).includes(t.slice(1))
+				t[0].toLowerCase() === 'o' &&
+				findCanonicalPointSize(t.slice(1)) !== undefined
 		);
 		isOblique = pointSizeIndex !== -1;
 	}
@@ -269,7 +290,8 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 		// it stays in tokens for the shape-matching step below.
 		pointSize = impliedPointSize!;
 	} else {
-		pointSize = isOblique ? tokens[pointSizeIndex].slice(1) : tokens[pointSizeIndex];
+		const rawMatch = isOblique ? tokens[pointSizeIndex].slice(1) : tokens[pointSizeIndex];
+		pointSize = findCanonicalPointSize(rawMatch)!;
 		tokens = [...tokens.slice(0, pointSizeIndex), ...tokens.slice(pointSizeIndex + 1)];
 	}
 
@@ -311,6 +333,7 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 	const finishName = extracted.matches.finish ?? null;
 
 	let customName: string | null = null;
+	let leftoverBrandName: string | null = null;
 	// A nibmeister grind is always a custom grind, even though its shape
 	// resolves via known vocabulary just like a manufacturer's stock
 	// shape — it's still an aftermarket modification, not how the nib
@@ -318,20 +341,27 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 	let isCustomGrind = nibmeisterName !== null;
 	if (tokens.length > 0) {
 		const leftover = tokens.join(' ');
-		const allKnownNames = [...shapeVocabulary, ...materialVocabulary, ...finishVocabulary].map(
-			(p) => p.words.join(' ')
+		const brandEntry = Object.entries(LEFTOVER_BRAND_WORD).find(
+			([word]) => word.toLowerCase() === leftover.toLowerCase()
 		);
-		const looksLikeATypo = allKnownNames.some((name) =>
-			isNearDuplicate(leftover.toLowerCase(), name.toLowerCase())
-		);
-		if (looksLikeATypo) {
-			return {
-				kind: 'unparseable',
-				reason: `"${leftover}" is close to a known nib shape/material/finish but doesn't match exactly — likely a typo`
-			};
+		if (brandEntry) {
+			leftoverBrandName = brandEntry[1];
+		} else {
+			const allKnownNames = [...shapeVocabulary, ...materialVocabulary, ...finishVocabulary].map(
+				(p) => p.words.join(' ')
+			);
+			const looksLikeATypo = allKnownNames.some((name) =>
+				isNearDuplicate(leftover.toLowerCase(), name.toLowerCase())
+			);
+			if (looksLikeATypo) {
+				return {
+					kind: 'unparseable',
+					reason: `"${leftover}" is close to a known nib shape/material/finish but doesn't match exactly — likely a typo`
+				};
+			}
+			customName = leftover;
+			isCustomGrind = true;
 		}
-		customName = leftover;
-		isCustomGrind = true;
 	}
 
 	return {
@@ -345,7 +375,7 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 		customName,
 		isCustomGrind,
 		flags,
-		brandName: maker?.brand ?? null,
+		brandName: maker?.brand ?? leftoverBrandName,
 		manufacturerName: maker?.manufacturer ?? null,
 		nibmeisterName,
 		isFlex: POINT_SIZE_IS_FLEX.has(pointSize)

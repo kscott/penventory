@@ -113,3 +113,39 @@ whichever category happens to run first.
   gap's closure rather than deleting the coverage. The equivalent class of bug is still reachable
   for `nib_brand`/`nib_manufacturer`, though — `brands` has no seed data at all, so a maker name
   like `"Pilot"` can still fuzzy-flag against an existing typo (`"Piolt"`); covered by a new test.
+
+**A leftover word can itself name the nib's own brand**, independent of the pen's brand —
+confirmed real (Ken, 2026-07-13): `"F Hongdian"` is a Hongdian-branded nib on a different-brand
+pen body, not a custom grind description. `LEFTOVER_BRAND_WORD` in `nib-parser.ts` is checked after
+shape/material/finish extraction, before a leftover word falls through to `custom_name` —
+manufacturer stays null (nothing confirms Hongdian makes its own nibs in-house the way Pilot/Sailor
+do). Real, structurally-similar future case Ken confirmed but that isn't buildable yet: JoWo blanks
+engraved/ground/etched uniquely for Esterbrook, Franklin-Christoph, Opus 88 — `brand_id !=
+manufacturer_id`, both non-null. FPC's raw text gives no signal to derive that automatically; it'll
+take manual correction once Nib CRUD exists, same as any other gap with no live-entry path yet.
+
+**Point size matching is case-insensitive, but always records the seed's own canonical casing** —
+confirmed policy (Ken, 2026-07-13): match insensitive, write proper case. This was already true
+everywhere else (`resolveOrFlag`'s exact/alias/fuzzy matching all normalize via `trim().
+toLowerCase()`; shape/material/finish extraction returns the DB row's own stored casing;
+`NIBMEISTER_GRIND`/`LEFTOVER_BRAND_WORD` already returned their dictionary's canonical string
+regardless of input casing) — the one real gap was point-size matching itself (both the direct
+`NIB_POINT_SIZE_SEED` check and the Oblique-prefix decomposition), which was case-sensitive
+end-to-end: a lowercase `"flex"` would never match `"Flex"` and would silently become
+`unparseable_nib` instead of resolving correctly. Fixed via `findCanonicalPointSize`, matched
+case-insensitively but always returning the seed's exact casing.
+
+**Two nib sub-fields ambiguous on the same row, resolved independently, is now proven** — not just
+plausible by construction. `nib_brand` and `nib_manufacturer` both derive from the same raw name
+(`"Pilot"`, via Signature) and both independently fuzzy-collide against the same existing `"Piolt"`
+typo; deciding them *differently* (one `merge_into` the existing typo, one `import` as genuinely
+new) and asserting each nib column ends up with its own distinct, correct id proves neither
+decision leaks into the other. Confirms the same `field_decisions`-per-field independence pens'
+Brand+Material+Trim Color combination already had, at the nib sub-field level for the first time.
+Reveals a real two-round shape worth naming explicitly: correcting an `unparseable_nib` re-resolves
+fresh via `resolveOrFlag` directly (ignoring any `field_decisions` already recorded) and re-flags
+in place if still ambiguous; only on the *second* round, once the row is a `parsed`-kind nib rather
+than an `unparseable`-kind one, does `applyDecision` actually consult `field_decisions`. Pre-setting
+decisions before the first round accomplishes nothing — same class of gap
+[[2026-07-10-re-flags-update-the-original-row]] already documents for pen-level fields, now
+confirmed to hold for nib sub-fields too.
