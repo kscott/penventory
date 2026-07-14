@@ -356,6 +356,147 @@ conversation turn out to need different answers — worth separating clearly:
    only `color_fpc` changes on a matched row, nothing else on that ink is touched,
    and the `import_runs` row is written.
 
+9. **Ink field-by-field completeness review — the same rigor step 6's pens half already
+   got, never yet applied to the ink half.** Confirmed after the fact (2026-07-13): the
+   pens side of step 6 went through a real post-merge completeness review (issue #15)
+   that read every field against Ken's actual `collected_pens.csv` directly rather than
+   trusting this document's assumptions, and found genuine bugs doing it — a
+   non-functional duplicate check, a crash on an unrecognized nib value, an
+   extraction-order bug, several real domain facts (Signature/Zoom/Music/CM/Journaler/
+   Scribe/Imperial/Seagull/Long Knife/Flex/Hongdian) that needed hand-confirming with
+   Ken rather than guessing. None of that ever happened for inks. This step is that
+   review, scoped to `collected_inks.csv` and the ink half of `fpc-import.ts`.
+
+   **Method, unchanged from the pens review — apply it fresh, don't assume ink mirrors
+   pens:**
+   - One column at a time: `Brand`, `Line`, `Name`, `Type`, `Color`, `Swabbed`, `Used`,
+     `Comment`, `Private Comment`, `Private`, `Archived`, `Archived On`, `Usage`,
+     `Tags`, `Date Added`, `Maker`, `Daily Usage`, `Last Usage`. Verify every
+     "required"/"ignored"/"combined" assumption below against the real file directly —
+     temporary, parse-only, never-commit, delete-after-use, same convention the pens
+     review used (see `docs/adr/2026-07-13-nib-shape-material-finish-vocabulary-is-pre-seeded.md`
+     for the pattern). The findings below are a confirmed starting point from one such
+     pass (2026-07-13, 259 real rows), not the final word — re-verify, don't just trust
+     this list.
+   - Two bug classes the nib review found do **not** apply here, confirmed by reading
+     the code, not assumed — worth stating explicitly so this review doesn't waste time
+     chasing them: (a) the empty-vocabulary-bootstrap problem (a parser doing its own
+     phrase-matching before a value ever reaches `resolveOrFlag`, so a genuinely new
+     word is never offered as a "new value" candidate) doesn't exist for inks — every
+     ink field (`Brand`/`Line`/`Name`/`Type`/`Maker`) resolves straight from raw CSV
+     text into `resolveOrFlag` with no pre-filtering step, the same way pens'
+     `Brand`/`Material`/`Trim Color` already safely do; (b) the extraction-order bug
+     (multiple facts smashed into one free-text column, parsed out in a
+     category-dependent sequence) doesn't apply either — ink's CSV already has each
+     fact in its own column, unlike `Nib`.
+   - Chase every coverage gap individually once new code lands here, same standard as
+     the rest of this project: 90% is the CI floor, 100% is the real bar unless a gap
+     has a written, verifiable reason (see
+     `docs/adr/2026-07-10-chase-coverage-gaps-to-100-percent.md`).
+
+   **Confirmed real findings from the 2026-07-13 pass — concrete, not hypothetical,
+   each with what it takes to close it:**
+   - **No required-field validation exists for inks at all — a real, unguarded gap.**
+     Pens have `PEN_REQUIRED_FIELDS` + `blankRequiredFields`, producing a clean
+     `unparseable_row` flag for a blank `Brand`/`Model`/`Color`/`Material`/`Filling
+     System`. Inks have no equivalent: a blank `Brand`/`Name`/`Type`/`Color` currently
+     flows straight into `resolveOrFlag`/direct field assignment with an empty string —
+     `resolveOrFlag(db, 'brand', '')` would silently create a nonsense empty-string
+     brand row instead of ever being flagged, and `name: ''`/`type: ''` would silently
+     write invalid data to `NOT NULL` columns with no error at all. Ken's real
+     `collected_inks.csv` happens to have zero blanks across `Brand`/`Name`/`Type`/
+     `Color` today (confirmed directly), so this hasn't bitten him yet — the code has
+     no guard regardless. **Resolve by** adding an `INK_REQUIRED_FIELDS` constant and
+     wiring the same `blankRequiredFields` check into the ink parse loop pens already
+     use — read `inks`' actual `.notNull()` columns in `schema.ts` as the ground truth
+     for what belongs in the set, don't guess from this list.
+   - **Ink's `unparseable_row` correction path is a stub, not a gap in disguise —
+     it's real, unimplemented code.** `resolveRowForCommit` in `fpc-import.ts` throws
+     `"ink unparseable_row correction isn't implemented yet"` outright whenever
+     `originalEntityType !== 'pen'`. Only reachable once the point above exists (nothing
+     currently produces an ink-side `unparseable_row` to correct). **Resolve by**
+     mirroring pens' correction path: re-run ink field resolution against the corrected
+     `row_data.raw`, re-flag in place (same row id) if the correction is itself still
+     ambiguous, commit cleanly if fixed — exact same shape as
+     `docs/adr/2026-07-10-unparseable-rows-are-correctable.md` already describes for
+     pens.
+   - **`Type` is cast, never validated — the same class of bug the nib base-size crash
+     was, just not yet triggered.** `type: rowData.type as (typeof
+     schema.INK_TYPES)[number]` at commit time is a bare TypeScript cast with zero
+     runtime check. `INK_TYPES`'s Drizzle `enum` option is not database-enforced (no
+     `CHECK` constraint — confirmed the same way the nib-purities/base-sizes finding
+     was: Drizzle's SQLite `enum` emits a plain `text` column). A genuinely invalid
+     `Type` value in the CSV would silently write garbage into a supposedly-constrained
+     column — no crash, no flag, nothing. Ken's real data only ever has `bottle`/
+     `sample` (confirmed directly; `cartridge` never appears once) — clean today by
+     luck, not by design. **Resolve by** deciding, the same way the
+     nib-value-lookup-tables-not-enums ADR already had to for purity/base-size/point-size:
+     is `Type` a closed set worth a hard validation error on mismatch (it's exactly
+     three fixed values, not an open collector vocabulary the way nib purity is), or
+     does it need its own flagged-review path? Almost certainly the former — resolve
+     with Ken before assuming either way.
+   - **`Tags` is completely unparsed — a large, real gap, not an edge case.** Confirmed
+     directly: 189 of 259 real rows (73%) have non-blank `Tags`, comma-separated free
+     text (`"reserved, smalt blue"`, `"azure, janelle"`, `"gifted"`). Nothing in
+     `fpc-import.ts` reads this column at all, even though the polymorphic
+     `tags`/`taggables` schema (step 4) already exists and already supports inks.
+     **Resolve by** splitting on comma (confirmed real delimiter; verify no other
+     separator convention appears anywhere in the real file before assuming comma is
+     the only one), trimming each piece, and creating (or reusing, exact-match only —
+     confirm with Ken whether tag names should ever get `resolveOrFlag`-style
+     fuzzy/alias treatment the way brand names do, or whether that's overkill for
+     informal free-text labels) a `tags` row plus a `taggables` row per tag per ink.
+   - **`Private` (boolean) is ignored, and there's no schema column for it at all.**
+     Real data: always `false` across all 259 rows — zero real signal either way in
+     Ken's own export. **Resolve by** asking Ken directly whether this is deliberately
+     out of scope (reads like FPC's own community-sharing privacy flag, which may not
+     mean anything in a single-user app) or a real gap worth a schema column — don't
+     guess given zero real evidence to reason from.
+   - **`Swabbed`/`Used`/`Usage`/`Daily Usage`/`Last Usage` are FPC-computed historical
+     stats with nowhere to land, same already-settled pattern as pens' analogous FPC
+     stats.** Real signal exists (`Swabbed`: 212 true / 47 false; `Used`: 140 / 119) but
+     `inks.swatched`/`inks.used` are explicitly computed columns — derived from
+     `inkings`/`photos`, neither of which exists until Phase 3/4 (see "Deferred
+     columns" below). These historical true/false facts have no home in Phase 1's
+     schema. **Resolve by** confirming with Ken whether the raw snapshot is worth
+     preserving as a note (a point-in-time fact: "FPC said used=true as of the export
+     date") or is accepted as fully lost, matching pens' "Penventory's real ledgers
+     replace FPC's computed stats" design — don't assume either answer without asking,
+     since unlike pens this wasn't explicitly discussed for inks.
+   - **`Comment`/`Private Comment` currently collapse into one undifferentiated
+     `notes` field — a decision that's never actually been exercised against real
+     content.** Current code joins both (blank-line separated) whenever non-blank.
+     Real data: `Private Comment` is blank in all 259 rows (zero real signal to verify
+     the collapsing behavior against); `Comment` has 16 non-blank rows. Given `Private
+     Comment` was presumably meant to pair with the `Private` flag above (a hidden
+     tier), collapsing them into one field may be conflating two different privacy
+     intents that were never actually tested. **Resolve by** confirming with Ken
+     whether single-user Penventory has any real "private from whom" concept worth a
+     separate field, or whether one `notes` field is genuinely fine — tied to the
+     `Private` decision above, resolve them together.
+   - **The `Brand|Line|Type` duplicate-identity key has never been independently
+     challenged the way pens' original key was.** Pens' key survived a real redesign
+     after contact with real data (Filling System excluded, resolved-ids not raw text —
+     see `docs/adr/2026-07-10-identity-key-is-resolved-not-raw-text.md`). Ink's key was
+     "designed during the pens-driven redesign but never independently questioned."
+     **Resolve by** asking the same skeptical questions pens' key got: does `Type`
+     really belong (two entries with the literal same `Brand`+`Line`+`Name` but
+     different `Type` — a bottle and a sample of the same ink — legitimately distinct,
+     or the same ink counted twice)? Does `Maker` ever belong? Run the real ~260-row
+     file through it and see whether it survives contact the way pens' redesigned key
+     did.
+
+   *Gate:* same shape as step 6's — unit tests for the new/changed parsing logic
+   against fixtures (one fixture per condition, fictionalized ink/pen identity, real
+   controlled vocabulary reused as-is — same standing rule the nib review's fixtures
+   already follow); integration tests for the parse-then-commit path proving each
+   resolved gap above (required-field validation, `unparseable_row` correction, `Type`
+   validation, `Tags` import, whatever `Private`/`Comment` decisions land) end-to-end
+   against a real temp-file SQLite; a real-file diagnostic re-run (temporary,
+   parse-only, never-commit, deleted after use) confirming the numbers hold up against
+   Ken's actual `collected_inks.csv`, same as the nib review's final check. Coverage
+   back to 100% (or every gap individually justified) once this step's code lands.
+
 ## Deferred columns — why, and where they actually land
 
 `project-plan.md`'s ink schema lists `used` and `swatched` as if present from day one.
