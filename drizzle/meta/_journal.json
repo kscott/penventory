@@ -64,6 +64,13 @@
       "when": 1783985330207,
       "tag": "0008_seed_nib_point_size_grades",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1783986814836,
+      "tag": "0009_seed_nib_shape_material_finish_vocabulary",
+      "breakpoints": true
     }
   ]
 }

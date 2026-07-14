@@ -90,7 +90,17 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 
 			expect(id).toBe(existing.id);
 			expect(db.select().from(brands).all()).toHaveLength(1);
-			expect(db.select().from(aliases).all()).toEqual([]);
+			// aliases isn't empty to start with — migration seeds a few (see
+			// the vocabulary-seeding ADR), none of them brand-type — filter to
+			// brand aliases specifically rather than assuming the table starts
+			// empty.
+			expect(
+				db
+					.select()
+					.from(aliases)
+					.all()
+					.filter((a) => a.aliasable_type === 'brand')
+			).toEqual([]);
 		});
 
 		it('merge_into with no target id — falls through, refuses rather than guessing', () => {
@@ -117,7 +127,17 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 
 			expect(id).toBe(existing.id);
 			expect(db.select().from(brands).all()).toHaveLength(1);
-			expect(db.select().from(aliases).all()).toEqual([
+			// aliases isn't empty to start with — migration seeds a few (see
+			// the vocabulary-seeding ADR), none of them brand-type — filter to
+			// brand aliases specifically rather than assuming the table starts
+			// empty.
+			expect(
+				db
+					.select()
+					.from(aliases)
+					.all()
+					.filter((a) => a.aliasable_type === 'brand')
+			).toEqual([
 				expect.objectContaining({
 					alias: 'Wavecrst',
 					aliasable_type: 'brand',
@@ -137,7 +157,17 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 				applyDecision(db, item, 'brand', 'brand', 'Wavecrst', undefined, brands)
 			).toThrow(CommitRefusedError);
 			expect(db.select().from(brands).all()).toHaveLength(1);
-			expect(db.select().from(aliases).all()).toEqual([]);
+			// aliases isn't empty to start with — migration seeds a few (see
+			// the vocabulary-seeding ADR), none of them brand-type — filter to
+			// brand aliases specifically rather than assuming the table starts
+			// empty.
+			expect(
+				db
+					.select()
+					.from(aliases)
+					.all()
+					.filter((a) => a.aliasable_type === 'brand')
+			).toEqual([]);
 		});
 
 		it('import + character-typo-only reasons ("fuzzy") — ALLOWED: creates a genuinely separate row', () => {

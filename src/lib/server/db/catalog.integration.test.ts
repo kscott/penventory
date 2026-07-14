@@ -7,6 +7,7 @@ import { and, eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { migrateDatabase } from './migrate';
 import {
+	aliases,
 	brands,
 	filling_systems,
 	finishes,
@@ -19,9 +20,12 @@ import {
 	nib_purities,
 	nib_shapes,
 	nibs,
+	FINISH_SEED,
 	NIB_BASE_SIZE_SEED,
+	NIB_MATERIAL_SEED,
 	NIB_POINT_SIZE_SEED,
 	NIB_PURITY_SEED,
+	NIB_SHAPE_SEED,
 	pen_materials,
 	pens,
 	taggables,
@@ -63,8 +67,14 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 		const penMaterial = db.insert(pen_materials).values({ name: 'Acrylic' }).returning().get();
 		const finish = db.insert(finishes).values({ name: 'Rhodium' }).returning().get();
 		const fillingSystem = db.insert(filling_systems).values({ name: 'Piston' }).returning().get();
-		const nibMaterial = db.insert(nib_materials).values({ name: 'Gold' }).returning().get();
-		const nibShape = db.insert(nib_shapes).values({ name: 'Round' }).returning().get();
+		// Gold/Round are pre-seeded by migration now — select rather than
+		// insert, same pattern as purity/baseSize/pointSize below.
+		const nibMaterial = db
+			.select()
+			.from(nib_materials)
+			.where(eq(nib_materials.name, 'Gold'))
+			.get()!;
+		const nibShape = db.select().from(nib_shapes).where(eq(nib_shapes.name, 'Round')).get()!;
 		const vendor = db.insert(vendors).values({ name: 'PenRealm' }).returning().get();
 		const purity = db.select().from(nib_purities).where(eq(nib_purities.name, '14K')).get()!;
 		const baseSize = db.select().from(nib_base_sizes).where(eq(nib_base_sizes.name, '#6')).get()!;
@@ -90,6 +100,40 @@ describe('core catalog schema (pens/inks/nibs/tags)', () => {
 		expect(names(db.select().from(nib_purities).all())).toEqual([...NIB_PURITY_SEED].sort());
 		expect(names(db.select().from(nib_base_sizes).all())).toEqual([...NIB_BASE_SIZE_SEED].sort());
 		expect(names(db.select().from(nib_point_sizes).all())).toEqual([...NIB_POINT_SIZE_SEED].sort());
+	});
+
+	it('seeds the known nib_shapes/nib_materials/finishes vocabulary on migration, plus the Journaler alias', () => {
+		const names = (rows: { name: string }[]) => rows.map((r) => r.name).sort();
+		expect(names(db.select().from(nib_shapes).all())).toEqual([...NIB_SHAPE_SEED].sort());
+		expect(names(db.select().from(nib_materials).all())).toEqual([...NIB_MATERIAL_SEED].sort());
+		expect(names(db.select().from(finishes).all())).toEqual([...FINISH_SEED].sort());
+
+		const cursiveItalic = db
+			.select()
+			.from(nib_shapes)
+			.where(eq(nib_shapes.name, 'Cursive Italic'))
+			.get()!;
+		const journalerAlias = db
+			.select()
+			.from(aliases)
+			.where(and(eq(aliases.alias, 'Journaler'), eq(aliases.aliasable_type, 'nib_shape')))
+			.get();
+		expect(journalerAlias?.aliasable_id).toBe(cursiveItalic.id);
+
+		const goldTone = db.select().from(finishes).where(eq(finishes.name, 'Gold Tone')).get()!;
+		const silverTone = db.select().from(finishes).where(eq(finishes.name, 'Silver Tone')).get()!;
+		const goldAlias = db
+			.select()
+			.from(aliases)
+			.where(and(eq(aliases.alias, 'Gold'), eq(aliases.aliasable_type, 'finish')))
+			.get();
+		const silverAlias = db
+			.select()
+			.from(aliases)
+			.where(and(eq(aliases.alias, 'Silver'), eq(aliases.aliasable_type, 'finish')))
+			.get();
+		expect(goldAlias?.aliasable_id).toBe(goldTone.id);
+		expect(silverAlias?.aliasable_id).toBe(silverTone.id);
 	});
 
 	describe('pens', () => {

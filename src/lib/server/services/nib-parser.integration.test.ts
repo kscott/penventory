@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { migrateDatabase } from '../db/migrate';
-import { aliases, finishes, nib_materials, nib_shapes } from '../db/schema';
+import { aliases } from '../db/schema';
 import { parseNibText } from './nib-parser';
 
 describe('parseNibText', () => {
@@ -49,9 +49,8 @@ describe('parseNibText', () => {
 	});
 
 	it('a full compound entry extracts point size, base size, an explicit material, and a multi-word shape', () => {
-		db.insert(nib_shapes).values({ name: 'Cursive Smooth Italic' }).run();
-		db.insert(nib_materials).values({ name: 'Titanium' }).run();
-
+		// Titanium/Cursive Smooth Italic are pre-seeded by migration now — see
+		// the vocabulary-seeding ADR — no manual insert needed.
 		const result = parseNibText(db, 'M #8 Titanium Cursive Smooth Italic');
 		expect(result).toMatchObject({
 			kind: 'parsed',
@@ -76,21 +75,16 @@ describe('parseNibText', () => {
 	});
 
 	it('leftover text after known tokens are stripped becomes custom_name, and marks is_custom_grind', () => {
-		const result = parseNibText(db, 'M Journaler');
+		const result = parseNibText(db, 'M Feathertip');
 		expect(result).toMatchObject({
 			kind: 'parsed',
 			pointSize: 'M',
-			customName: 'Journaler',
+			customName: 'Feathertip',
 			isCustomGrind: true
 		});
 	});
 
-	it('a known alias resolves to its canonical shape, the same way brand aliases resolve', () => {
-		const shape = db.insert(nib_shapes).values({ name: 'Cursive Italic' }).returning().get();
-		db.insert(aliases)
-			.values({ alias: 'Journaler', aliasable_type: 'nib_shape', aliasable_id: shape.id })
-			.run();
-
+	it('the seeded "Journaler" alias resolves to canonical shape "Cursive Italic" out of the box, the same way brand aliases resolve', () => {
 		const result = parseNibText(db, 'M Journaler');
 		expect(result).toMatchObject({
 			kind: 'parsed',
@@ -119,8 +113,7 @@ describe('parseNibText', () => {
 	});
 
 	it('finish (plating color) is extracted separately from material — confirmed real case', () => {
-		db.insert(finishes).values({ name: 'Rose Gold' }).run();
-
+		// Rose Gold is pre-seeded by migration now — no manual insert needed.
 		const result = parseNibText(db, 'F Rose Gold');
 		expect(result).toMatchObject({
 			pointSize: 'F',
@@ -166,7 +159,7 @@ describe('parseNibText', () => {
 	});
 
 	it('a leftover token that near-matches a known shape/material/finish is flagged rather than treated as a custom name', () => {
-		db.insert(nib_shapes).values({ name: 'Cursive Italic' }).returning().get();
+		// Cursive Italic is pre-seeded by migration now — no manual insert needed.
 		const result = parseNibText(db, 'F Cursive Itallic');
 		expect(result.kind).toBe('unparseable');
 	});
@@ -221,7 +214,7 @@ describe('parseNibText', () => {
 	});
 
 	it('an explicit shape token still overrides "Zoom"\'s implied Architect default', () => {
-		db.insert(nib_shapes).values({ name: 'Cursive Italic' }).run();
+		// Cursive Italic is pre-seeded by migration now — no manual insert needed.
 		const result = parseNibText(db, 'Zoom 21K Cursive Italic');
 		expect(result).toMatchObject({
 			kind: 'parsed',
@@ -294,7 +287,7 @@ describe('parseNibText', () => {
 	});
 
 	it('an explicit shape token still overrides the Oblique decomposition', () => {
-		db.insert(nib_shapes).values({ name: 'Cursive Italic' }).run();
+		// Cursive Italic is pre-seeded by migration now — no manual insert needed.
 		const result = parseNibText(db, 'OM Cursive Italic');
 		expect(result).toMatchObject({
 			kind: 'parsed',

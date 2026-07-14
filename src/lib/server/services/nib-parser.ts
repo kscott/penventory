@@ -110,6 +110,46 @@ function extractPhrase(
 	return null;
 }
 
+type Category = 'shape' | 'material' | 'finish';
+
+// Shape/material/finish are extracted together, longest phrase first across
+// all three vocabularies at once — not as three separate sequential passes
+// (shape, then material, then finish). A sequential pass lets a shorter
+// phrase from an earlier category steal a word that would otherwise form a
+// longer, more specific phrase in a later category: with "Gold" seeded as a
+// nib_material, a strictly-sequential material pass matches "Gold" inside
+// "Rose Gold" before the finish pass ever runs, leaving "Rose" as orphaned
+// leftover text and silently dropping the real finish. Confirmed reachable
+// with real data, not hypothetical: any bare-purity nib ("B 18K") defaults
+// materialName to "Gold", which becomes a real nib_materials row on first
+// commit — every later "Rose Gold" finish would break the same way.
+function extractCategorizedPhrases(
+	tokens: string[],
+	vocabularies: Record<Category, Phrase[]>
+): {
+	tokens: string[];
+	matches: Record<Category, string | null>;
+} {
+	const combined = (
+		[
+			...vocabularies.shape.map((p) => ({ ...p, category: 'shape' as const })),
+			...vocabularies.material.map((p) => ({ ...p, category: 'material' as const })),
+			...vocabularies.finish.map((p) => ({ ...p, category: 'finish' as const }))
+		] as (Phrase & { category: Category })[]
+	).sort((a, b) => b.words.length - a.words.length);
+
+	let remaining = tokens;
+	const matches: Record<Category, string | null> = { shape: null, material: null, finish: null };
+	for (const phrase of combined) {
+		if (matches[phrase.category]) continue;
+		const match = extractPhrase(remaining, [phrase]);
+		if (!match) continue;
+		remaining = match.remaining;
+		matches[phrase.category] = match.canonicalName;
+	}
+	return { tokens: remaining, matches };
+}
+
 function findExactName(db: Db, table: typeof nib_base_sizes | typeof nib_purities, name: string) {
 	return db.select().from(table).where(eq(table.name, name)).get();
 }
@@ -184,21 +224,19 @@ export function parseNibText(db: Db, raw: string): ParsedNibText {
 	}
 
 	const shapeVocabulary = loadVocabulary(db, nib_shapes, 'nib_shape');
-	const shapeMatch = extractPhrase(tokens, shapeVocabulary);
-	if (shapeMatch) tokens = shapeMatch.remaining;
-
 	const materialVocabulary = loadVocabulary(db, nib_materials, 'nib_material');
-	const materialMatch = extractPhrase(tokens, materialVocabulary);
-	if (materialMatch) tokens = materialMatch.remaining;
-
 	const finishVocabulary = loadVocabulary(db, finishes, 'finish');
-	const finishMatch = extractPhrase(tokens, finishVocabulary);
-	if (finishMatch) tokens = finishMatch.remaining;
+	const extracted = extractCategorizedPhrases(tokens, {
+		shape: shapeVocabulary,
+		material: materialVocabulary,
+		finish: finishVocabulary
+	});
+	tokens = extracted.tokens;
 
 	const maker = POINT_SIZE_MAKER[pointSize];
-	const shapeName = shapeMatch?.canonicalName ?? (isOblique ? 'Oblique' : maker?.shape) ?? 'Round';
-	const materialName = materialMatch?.canonicalName ?? (purityName ? 'Gold' : 'Steel');
-	const finishName = finishMatch?.canonicalName ?? null;
+	const shapeName = extracted.matches.shape ?? (isOblique ? 'Oblique' : maker?.shape) ?? 'Round';
+	const materialName = extracted.matches.material ?? (purityName ? 'Gold' : 'Steel');
+	const finishName = extracted.matches.finish ?? null;
 
 	let customName: string | null = null;
 	let isCustomGrind = false;

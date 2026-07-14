@@ -84,6 +84,23 @@ design — Pilot's Signature/CM, Sailor's Zoom/Music — and `parseNibText` reso
 the same `resolveOrFlag('brand', ...)` pens' own `Brand` field already uses. See
 [[docs/adr/2026-07-13-nib-manufacturer-and-brand-are-independent-fields]].
 
+**`nib_shapes`/`nib_materials`/`finishes` are pre-seeded with Ken's confirmed real vocabulary
+(`NIB_SHAPE_SEED`/`NIB_MATERIAL_SEED`/`FINISH_SEED` in `schema.ts`), not left empty.**
+`parseNibText` matches shape/material/finish words against these tables *before* a value ever
+reaches `resolveOrFlag` — an unmatched word silently becomes `custom_name` with the material/shape
+defaulted, never offered as a "new value" candidate the way `nib_base_size`/`nib_purity` are. On a
+genuinely empty database, most of the real Nib column's descriptive words would never be
+recognized as structured data at all. `finishes` is shared with pens' own Trim Color; `Gold`/
+`Silver` are seeded as `Gold Tone`/`Silver Tone` (tone, not composition — real metal composition is
+a separate fact, `pens.material_id`) with `Gold`/`Silver` as raw-text aliases, while `Copper`/
+`Bronze` stay literal and unaliased (real copper/bronze-metal exceptions mixed into otherwise-tone
+data, indistinguishable from raw text alone). Shape/material/finish are extracted together in one
+longest-phrase-first pass across all three vocabularies (`extractCategorizedPhrases`), not as three
+separate sequential passes — sequential extraction let a short phrase from an earlier category
+(`"Gold"`, a material) steal a token that would otherwise form a longer, more specific phrase in a
+later category (`"Rose Gold"`, a finish), a real bug the seeding surfaced. See
+[[docs/adr/2026-07-13-nib-shape-material-finish-vocabulary-is-pre-seeded]].
+
 ## Computed values are never stored twice
 
 A value derived from other rows is computed at read time, never written redundantly to a column.

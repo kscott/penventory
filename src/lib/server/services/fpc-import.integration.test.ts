@@ -78,7 +78,12 @@ describe('fpc-import (parse + commit)', () => {
 			.values({ brand_id: brand.id, name: fields.model })
 			.returning()
 			.get();
-		const finish = targetDb.insert(finishes).values({ name: fields.trimColor }).returning().get();
+		// finishes is pre-seeded by migration now (see the vocabulary-seeding
+		// ADR) — find-or-create rather than a blind insert, since a caller's
+		// trimColor may already be a seeded name (e.g. "Ruthenium").
+		const finish =
+			targetDb.select().from(finishes).where(eq(finishes.name, fields.trimColor)).get() ??
+			targetDb.insert(finishes).values({ name: fields.trimColor }).returning().get();
 		const fillingSystem = targetDb
 			.insert(filling_systems)
 			.values({ name: fields.fillingSystem })
@@ -881,11 +886,8 @@ describe('fpc-import (parse + commit)', () => {
 			// Phrase-boundary matching for a compound Nib string only works
 			// against *known* vocabulary — the same reason a genuinely new
 			// value falls through to custom_name until it's been seen once
-			// (see nib-parser's tests). Pre-seeding here mirrors a collection
-			// where Titanium/Cursive Smooth Italic have shown up before.
-			db.insert(nib_materials).values({ name: 'Titanium' }).run();
-			db.insert(nib_shapes).values({ name: 'Cursive Smooth Italic' }).run();
-
+			// (see nib-parser's tests). Titanium/Cursive Smooth Italic are
+			// pre-seeded by migration now — no manual insert needed.
 			const { attemptId } = parseCatalogImport(db, {
 				pensCSV: fixture('pens', 'nib-full-compound'),
 				inksCSV: fixture('inks', 'empty')
@@ -932,13 +934,12 @@ describe('fpc-import (parse + commit)', () => {
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
 
 			const nib = db.select().from(nibs).all()[0];
-			expect(nib.custom_name).toBe('Journaler');
+			expect(nib.custom_name).toBe('Feathertip');
 			expect(nib.is_custom_grind).toBe(true);
 		});
 
 		it('commits a finish (plating color) extracted from the Nib text, separate from material', async () => {
-			db.insert(finishes).values({ name: 'Rose Gold' }).run();
-
+			// Rose Gold is pre-seeded by migration now — no manual insert needed.
 			const { attemptId } = parseCatalogImport(db, {
 				pensCSV: fixture('pens', 'finish-as-plating-color'),
 				inksCSV: fixture('inks', 'empty')
@@ -1012,6 +1013,38 @@ describe('fpc-import (parse + commit)', () => {
 
 			expect(nibBrand?.name).toBe('Pilot');
 			expect(nibManufacturer?.name).toBe('Pilot');
+		});
+
+		it('an unparseable_nib corrected to a maker-proprietary point size whose brand fuzzy-matches an existing typo gets re-flagged, not silently created', async () => {
+			// Unlike nib_material/nib_shape/finish (whose only possible values
+			// are now either an exact-seeded default or an exact vocabulary
+			// match, so they can never land in resolveOrFlag's 'flagged'
+			// outcome), nib_brand/nib_manufacturer resolve against the
+			// brands table, which has no seed data at all — a real,
+			// reachable ambiguity, unlike the material/shape case seeding
+			// closed off.
+			db.insert(brands).values({ name: 'Piolt' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'nib-malformed-token'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Nib', 'Signature 14K');
+			decideRow(item.id, 'import');
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+
+			expect(db.select().from(pens).all()).toEqual([]);
+			const items = flaggedItemsFor(attemptId);
+			expect(items).toHaveLength(1);
+			expect(items[0].id).toBe(item.id);
+			expect(items[0].flag_type).toBe('needs_confirmation');
+			const candidateInfo = items[0].candidate_info as { fields: Record<string, unknown> };
+			expect(candidateInfo.fields.nib_brand).toBeDefined();
+			expect(candidateInfo.fields.nib_manufacturer).toBeDefined();
 		});
 
 		it('an unparseable_nib row can be skipped, committing the pen without a nib', async () => {
@@ -1219,7 +1252,14 @@ describe('fpc-import (parse + commit)', () => {
 			const pen = db.select().from(pens).all()[0];
 			expect(pen.brand_id).toBe(existingBrand.id);
 			expect(db.select().from(brands).all()).toHaveLength(1);
-			const alias = db.select().from(aliases).all()[0];
+			// aliases isn't empty to start with — migration seeds a few (see
+			// the vocabulary-seeding ADR) — find this one rather than assuming
+			// it's the only or first row.
+			const alias = db
+				.select()
+				.from(aliases)
+				.all()
+				.find((a) => a.aliasable_type === 'brand');
 			expect(alias).toMatchObject({
 				alias: 'Larkspur Pen Company',
 				aliasable_type: 'brand',
@@ -1275,7 +1315,14 @@ describe('fpc-import (parse + commit)', () => {
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
 
-			const alias = db.select().from(aliases).all()[0];
+			// aliases isn't empty to start with — migration seeds a few (see
+			// the vocabulary-seeding ADR) — find this one rather than assuming
+			// it's the only or first row.
+			const alias = db
+				.select()
+				.from(aliases)
+				.all()
+				.find((a) => a.alias === 'Wavecrst');
 			expect(alias).toMatchObject({
 				alias: 'Wavecrst',
 				aliasable_type: 'brand',
@@ -1302,9 +1349,16 @@ describe('fpc-import (parse + commit)', () => {
 
 			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
 			expect(result.pensCreated).toBe(2);
-			const allAliases = db.select().from(aliases).all();
-			expect(allAliases).toHaveLength(1);
-			expect(allAliases[0]).toMatchObject({
+			// aliases isn't empty to start with — migration seeds a few (see
+			// the vocabulary-seeding ADR) — assert no second Wavecrst alias got
+			// created, not that the whole table has exactly one row.
+			const wavecrstAliases = db
+				.select()
+				.from(aliases)
+				.all()
+				.filter((a) => a.alias === 'Wavecrst');
+			expect(wavecrstAliases).toHaveLength(1);
+			expect(wavecrstAliases[0]).toMatchObject({
 				alias: 'Wavecrst',
 				aliasable_type: 'brand',
 				aliasable_id: existingBrand.id
@@ -1759,7 +1813,16 @@ describe('fpc-import (parse + commit)', () => {
 			expect(pen.trim_color_id).toBe(existingFinish.id);
 			expect(db.select().from(brands).all()).toHaveLength(1);
 			expect(db.select().from(pen_materials).all()).toHaveLength(1);
-			expect(db.select().from(finishes).all()).toHaveLength(1);
+			// finishes is pre-seeded by migration now — assert no second
+			// Rhodium row got created alongside the existing one, not that the
+			// whole table has exactly one row.
+			expect(
+				db
+					.select()
+					.from(finishes)
+					.all()
+					.filter((f) => f.name === 'Rhodium')
+			).toHaveLength(1);
 		});
 
 		it('three independently-flagged fields with only two decided still refuses — per-field completeness holds at 3+ fields, not just 2', async () => {
@@ -1785,8 +1848,14 @@ describe('fpc-import (parse + commit)', () => {
 			);
 			expect(db.select().from(pens).all()).toEqual([]);
 
-			// Deciding the third field is what actually unblocks it.
-			const existingFinish = db.select().from(finishes).all()[0];
+			// Deciding the third field is what actually unblocks it. finishes
+			// is pre-seeded by migration now, so find the Rhodium row rather
+			// than assuming it's the only (or first) row in the table.
+			const existingFinish = db
+				.select()
+				.from(finishes)
+				.all()
+				.find((f) => f.name === 'Rhodium')!;
 			decideField(item.id, 'trim_color', 'merge_into', existingFinish.id);
 			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
 			expect(result.pensCreated).toBe(1);
@@ -1902,7 +1971,8 @@ describe('fpc-import (parse + commit)', () => {
 		});
 
 		it('correcting Nib to a value with a finish resolves nibFinish during re-resolution too', async () => {
-			db.insert(finishes).values({ name: 'Rose Gold' }).run();
+			// Rose Gold is pre-seeded by migration now — no manual insert
+			// needed.
 			const { attemptId } = parseCatalogImport(db, {
 				pensCSV: fixture('pens', 'nib-malformed-token'),
 				inksCSV: fixture('inks', 'empty')
@@ -1917,14 +1987,15 @@ describe('fpc-import (parse + commit)', () => {
 			expect(nib.finish_id).not.toBeNull();
 		});
 
-		it('correcting Nib to a bare point size whose default material ("Steel") collides with an existing near-miss typo gets re-flagged, not silently created — closes the same gap as the compound-name brand case, for a default value instead of raw text', async () => {
-			// Real, plausible scenario: an earlier import created "Steal" (an
-			// uncorrected typo) as a nib_materials row. A later pen's bare
-			// point size ("M") defaults to the literal string "Steel" — which
-			// now IS ambiguous against the catalog, even though nothing about
-			// this specific row's text was ever fuzzy. Also closes the pens
-			// field-by-field review's gap #5 (2026-07-10): nib defaults can
-			// collide with existing near-miss data, never previously proven.
+		it('a bare point size\'s default material ("Steel") resolves cleanly via exact match even with a near-miss typo ("Steal") already in the catalog — seeding closes this gap', async () => {
+			// Before nib_materials was seeded, a bare point size's defaulted
+			// materialName could silently collide with an existing near-miss
+			// typo like "Steal" and get incorrectly flagged for confirmation
+			// on every future bare-point-size row (closed the pens
+			// field-by-field review's gap #5, 2026-07-10). Seeding "Steel" as
+			// an exact, permanent canonical value means resolveOrFlag always
+			// finds it via exact match first, before ever reaching fuzzy
+			// comparison — see the vocabulary-seeding ADR.
 			db.insert(nib_materials).values({ name: 'Steal' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
@@ -1935,17 +2006,15 @@ describe('fpc-import (parse + commit)', () => {
 			correctRawField(item.id, 'Nib', 'M');
 			decideRow(item.id, 'import');
 
-			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
-				CommitRefusedError
-			);
-
-			expect(db.select().from(pens).all()).toEqual([]);
-			const items = flaggedItemsFor(attemptId);
-			expect(items).toHaveLength(1);
-			expect(items[0].id).toBe(item.id);
-			expect(items[0].flag_type).toBe('needs_confirmation');
-			const candidateInfo = items[0].candidate_info as { fields: Record<string, unknown> };
-			expect(candidateInfo.fields.nib_material).toBeDefined();
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.pensCreated).toBe(1);
+			const nib = db.select().from(nibs).all()[0];
+			const material = db
+				.select()
+				.from(nib_materials)
+				.all()
+				.find((m) => m.id === nib.material_id);
+			expect(material?.name).toBe('Steel');
 		});
 
 		it('commits a pen with a blank Trim Color as trim_color_id = null — real case, no trim hardware', async () => {
@@ -1993,15 +2062,23 @@ describe('fpc-import (parse + commit)', () => {
 
 			const pen = db.select().from(pens).all()[0];
 			expect(pen.trim_color_id).toBe(existing.id);
-			expect(db.select().from(finishes).all()).toHaveLength(1);
+			// finishes is pre-seeded by migration now, so the table isn't empty
+			// to start with — the real assertion is "no second Rhodium row got
+			// created alongside the existing one via merge_into".
+			expect(
+				db
+					.select()
+					.from(finishes)
+					.all()
+					.filter((f) => f.name === 'Rhodium')
+			).toHaveLength(1);
 		});
 
 		it('pen.trim_color_id and nib.finish_id resolve to two distinct, correctly-named rows in the shared finishes table', async () => {
-			// 'Rose Gold' must be known vocabulary for nib-parser's exact-phrase
-			// extraction to find it in the Nib text at all — same reason the
-			// full-compound-nib test pre-seeds Titanium/Cursive Smooth Italic.
-			db.insert(finishes).values({ name: 'Rose Gold' }).run();
-
+			// Rose Gold is pre-seeded by migration now — no manual insert
+			// needed. Trim Color "Silver" resolves via alias to canonical
+			// "Silver Tone" (see the vocabulary-seeding ADR) — that's the tone,
+			// not a claim the trim is literally silver metal.
 			const { attemptId } = parseCatalogImport(db, {
 				pensCSV: fixture('pens', 'finish-as-plating-color'),
 				inksCSV: fixture('inks', 'empty')
@@ -2013,7 +2090,7 @@ describe('fpc-import (parse + commit)', () => {
 			const nib = db.select().from(nibs).all()[0];
 			expect(pen.trim_color_id).not.toBe(nib.finish_id);
 			const allFinishes = db.select().from(finishes).all();
-			expect(allFinishes.find((f) => f.id === pen.trim_color_id)?.name).toBe('Silver');
+			expect(allFinishes.find((f) => f.id === pen.trim_color_id)?.name).toBe('Silver Tone');
 			expect(allFinishes.find((f) => f.id === nib.finish_id)?.name).toBe('Rose Gold');
 		});
 

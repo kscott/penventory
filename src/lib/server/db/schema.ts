@@ -199,6 +199,58 @@ export const NIB_POINT_SIZE_SEED = [
 	'Music'
 ] as const;
 
+// Seed values for nib_shapes/nib_materials (and the finish-tone slice of
+// finishes below) — unlike NIB_*_SEED above, these tables are ordinary
+// resolveOrFlag-style controlled lists (fuzzy/alias, open-ended), not
+// exact-match-only, so this isn't a gate parseNibText checks against. It
+// exists so a genuinely new word is never seen for the *first* time by a
+// completely empty vocabulary: parseNibText does its own phrase-matching
+// against these tables before a value ever reaches resolveOrFlag, so an
+// unmatched word silently becomes custom_name with a defaulted material/
+// shape instead of ever being offered as a "new value" candidate — see
+// docs/adr/2026-07-13-nib-manufacturer-and-brand-are-independent-fields.md.
+// Seeded from what's already confirmed in Ken's real collected_pens.csv;
+// the migration's own hand-authored INSERTs are the actual source of
+// truth for the DB rows, this is kept in sync by hand and verified by a
+// test, same pattern as NIB_POINT_SIZE_SEED.
+export const NIB_SHAPE_SEED = [
+	'Round',
+	'Stub',
+	'Cursive Italic',
+	'Cursive Smooth Italic',
+	'Architect',
+	'Italic',
+	'Oblique'
+] as const;
+export const NIB_MATERIAL_SEED = ['Steel', 'Gold', 'Titanium'] as const;
+// Gold/Silver are intentionally absent as canonical names — Ken's real trim
+// colors describe plating *tone*, not composition (that's tracked
+// separately on pens.material_id, e.g. "Sterling Silver"), so the canonical
+// rows are "Gold Tone"/"Silver Tone" with "Gold"/"Silver" as raw-text
+// aliases. Copper/Bronze are deliberately literal, unaliased — Ken has a
+// couple of pens with genuine copper-metal trim mixed in among copper-toned
+// ones, indistinguishable from the raw text alone.
+export const FINISH_SEED = [
+	'Black',
+	'Rose Gold',
+	'Ruthenium',
+	'Gunmetal',
+	'Bronze',
+	'Copper',
+	'Blue',
+	'Brown',
+	'Clear',
+	'Raven',
+	'Stainless Steel',
+	'Titanium',
+	'Black/Gunmetal',
+	'Black/silver',
+	'Copper/Gold',
+	'Gold/Brass',
+	'Gold Tone',
+	'Silver Tone'
+] as const;
+
 export const INK_TYPES = ['bottle', 'sample', 'cartridge'] as const;
 export type InkType = (typeof INK_TYPES)[number];
 
