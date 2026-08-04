@@ -151,7 +151,15 @@ export type SizeCategory = (typeof SIZE_CATEGORIES)[number];
 export const CONDITIONS = ['new', 'vintage', 'second_hand'] as const;
 export type Condition = (typeof CONDITIONS)[number];
 
-export const OWNERSHIP_STATES = ['active', 'retired', 'rehomed'] as const;
+// One shared enum across pens and inks (Ken's call, 2026-08-04) rather than
+// a per-entity split, even though 'empty' only ever makes sense for an ink
+// (a bottle that's run dry — distinct from 'retired', which still has ink
+// but isn't reached for) and never for a pen. Nothing sets 'empty' yet —
+// there's no signal for it until Phase 3's manual edit UI or Phase 4's
+// inkings/usage ledger exists; this is purely a schema widening ahead of
+// that, surfaced while discussing rebuy handling (an emptied, then
+// rebought, ink is exactly the case that needs this state to exist).
+export const OWNERSHIP_STATES = ['active', 'retired', 'empty', 'rehomed'] as const;
 export type OwnershipState = (typeof OWNERSHIP_STATES)[number];
 
 // Shared high/medium/low scale — nibs.feedback/wetness, inks.sheen/shading/
