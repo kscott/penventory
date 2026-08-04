@@ -51,24 +51,47 @@ issue/branch, closed before merge.
    two correction types, and building all four at once risked a large PR with nothing landing.
    Decided with Ken 2026-08-04.
 
-   3a. **`possible_duplicate` only, plus a minimal open-attempts index.** Row-level decision only
-       (`import`/`skip`, no per-field candidate picking) — the simplest shape, and the plan's own
-       original gate example. Renders the match list (existing vs batch, groupKey, similarity).
-       Proves out the whole page shell (load an attempt + its items, decide-on-click via fetch, a
-       commit-enabled indicator once everything's decided) that 3b/3c both reuse. Also adds
-       `/import` — a flat list of every non-`committed` `import_attempt`, across operation types
-       (not locked to `catalog_import` — step 5's color-refresh attempts belong here too once that
-       exists), linking into each one's review page. Added 2026-08-04: Ken flagged that an attempt
-       has no way to be found again without remembering its URL/id by hand, and separately raised
-       wanting multiple files staged up for processing at once (color-refresh especially) — a
-       type-agnostic index is the natural home for both. Deliberately minimal: no pagination,
-       filtering, or sorting controls — a single-user tool won't realistically have enough
-       concurrent open attempts to need them yet.
-       *Gate:* Playwright test — flag a possible-duplicate, record a decision, assert it's
-       persisted and reflected, assert the commit-enabled indicator flips once every item in the
-       attempt is decided. Separate Playwright test for `/import`: create two attempts, assert
-       both are listed and link to their own review page, assert a committed attempt drops off the
-       list.
+   3a. **`possible_duplicate`, a minimal open-attempts index, and — the real foundation of this
+       step — generic per-row editing.** Confirmed with Ken 2026-08-04: any raw field on any
+       flagged row (not just the field that triggered the flag) needs to be editable — corrected,
+       filled in if blank, or cleared if it shouldn't have been there — with the row re-evaluated
+       against current data afterward, for every flag type, not just `unparseable_row`/
+       `unparseable_nib`. Editing is optional and never auto-resolves a row by itself: a
+       possible_duplicate that's still a duplicate after editing (or resolves into a *different*
+       flag type — fixing a Brand typo could turn it into `needs_confirmation`) still needs an
+       explicit decision. A row that comes back genuinely clean behaves exactly like a
+       never-flagged row already does (auto-`decision: 'import'`), not a new special case.
+
+       This is real new service-layer work, not just UI: a generic re-evaluation function,
+       callable interactively (not just at commit time the way `resolveRowForCommit`'s two
+       existing special cases work today) — re-run full field resolution for the row's entity type
+       (pen or ink) against the corrected `row_data.raw`, re-check duplicates against both the real
+       catalog *and* every other still-pending item in the same attempt (sourced from their
+       already-persisted `row_data`, not re-resolved), determine the new flag (or clear it), and
+       update the item in place (mirrors the re-flag-updates-the-original-row pattern commit-time
+       correction already uses). Nearly every low-level piece already exists and is reusable
+       (`resolvePenFields`/`resolveInkFields`, `buildPenRowData`/`buildInkRowData`,
+       `penIdentityGroupKey`/`inkIdentityGroupKey`, `findDuplicateMatches`, `determineFlag`) — this
+       is orchestration, not new resolution logic.
+
+       On top of that: possible_duplicate's own row-level decision (`import`/`skip`) — the
+       simplest decision shape, and the plan's own original gate example — and `/import`, a flat
+       list of every non-`committed` `import_attempt` across operation types (not locked to
+       `catalog_import` — step 5's color-refresh attempts belong here too), linking into each
+       attempt's review page. Added 2026-08-04: Ken flagged that an attempt has no way to be found
+       again without remembering its URL/id by hand, and separately wants multiple files staged up
+       for processing at once (color-refresh especially). Deliberately minimal — no pagination,
+       filtering, or sorting; a single-user tool won't realistically need them yet.
+
+       *Gate:* unit/integration tests for the re-evaluation function directly (edit clears a
+       duplicate match; edit turns a duplicate into a different flag type; edit fills a blank
+       required field; edit clears a previously-populated optional field; a fully-clean
+       re-evaluation auto-decides `import`) — independent of any UI, same as Phase 1's own
+       parse/commit logic. Playwright test for the review page — flag a possible-duplicate, edit a
+       field and confirm re-evaluation is reflected, record a decision, assert it's persisted,
+       assert the commit-enabled indicator flips once every item in the attempt is decided.
+       Separate Playwright test for `/import`: create two attempts, assert both are listed and
+       link to their own review page, assert a committed attempt drops off the list.
 
    3b. **`needs_confirmation`.** Per-field decisions (brand/line/model/nib_* — every field named in
        `candidate_info.fields`/`nibValueFlags`), each independently `import`/`merge_into`/
