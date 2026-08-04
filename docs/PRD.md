@@ -173,10 +173,14 @@ Replaces FPC's single `Archived` boolean, which conflates two different things:
 
 - **Active** — in normal use or available for use. Shown by default.
 - **Retired** — still owned, just not used or cared for. Hidden by default.
+- **Empty** (ink only) — the bottle's run dry, nothing left to use. Distinct from Retired: Retired
+  means "could use it, choosing not to"; Empty means "physically can't, none left." Rebuying an
+  emptied ink moves it back to Active — Empty is current status, not a permanent record. Doesn't
+  apply to pens.
 - **Rehomed** — sold or given away, no longer owned. Hidden by default. A freeform note covers
   the circumstances; no structured recipient/price-received fields needed.
 
-All three states are preserved forever — nothing is ever deleted. Viewing retired/rehomed items
+All states are preserved forever — nothing is ever deleted. Viewing retired/empty/rehomed items
 requires a deliberate action (a filter or explicit view), not something that appears by default.
 
 A wishlist entry follows the same "preserved forever, hidden by default" pattern once converted

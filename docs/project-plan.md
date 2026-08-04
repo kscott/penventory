@@ -266,7 +266,9 @@ flow                  enum(high / medium / low)   (distinct from wetness — bot
 used                  boolean  — COMPUTED: true if ≥1 inking ledger entry exists (Phase 4)
 swatched              boolean  — COMPUTED: true if a swatch photo/composite exists (Phase 3)
 notes                 text
-ownership_state        enum(active / retired / rehomed)
+ownership_state        enum(active / retired / empty / rehomed) — empty is ink-only, unlike the
+                                           other three which pens share; kept in one shared
+                                           OWNERSHIP_STATES enum anyway (2026-08-04 decision)
 ownership_changed_on   date    (parity with pens — was missing, no reason for the asymmetry)
 created_at / updated_at
 ```

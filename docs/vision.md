@@ -222,20 +222,26 @@ color still gets its own ink catalog entry as before. The pen still carries a li
 with a bottle of [color]" reminder either way; the difference is that reminder now links to a
 real inventory fact instead of dead-ending as prose.
 
-## Ownership state: active / retired / rehomed
+## Ownership state: active / retired / empty / rehomed
 
-FPC's single `Archived` boolean conflates two different things. Split:
+FPC's single `Archived` boolean conflates several different things. Split:
 
 - **Retired/inactive** — still owned, just not used or cared for anymore (real for some pens:
   own it, don't reach for it)
+- **Empty** (ink only) — the bottle's actually run dry, nothing left to use. Distinct from
+  retired: retired means "could use it, just don't"; empty means "can't, there's none left."
+  Confirmed real (2026-08-04, surfaced while working through rebuy handling) — not a myth after
+  all. Doesn't apply to pens.
 - **Rehomed** — sold or given away, no longer owned
 
-**Both stay in the collection's data — full history preserved, never deleted — but excluded from
-normal/default display.** Seeing them requires a specific, deliberate action, not something that
-shows up by default. For rehomed items, a freeform note is sufficient — no need for structured
-recipient/price-received fields. The same "gone but preserved, hidden unless asked for" rule
-would likely apply to a fully emptied ink bottle too, though Ken's skeptical that actually
-happens in practice ("it may be a myth").
+**All three (well, four counting active) stay in the collection's data — full history preserved,
+never deleted — but excluded from normal/default display.** Seeing them requires a specific,
+deliberate action, not something that shows up by default. For rehomed items, a freeform note is
+sufficient — no need for structured recipient/price-received fields.
+
+An emptied ink that gets rebought goes back to `active` — the state is current status, not a
+permanent record of ever having been empty. That history lives in the purchase log (§ Purchase),
+once it exists (Phase 4), not in `ownership_state` itself.
 
 ---
 
