@@ -42,15 +42,36 @@ issue/branch, closed before merge.
    *Gate:* contract test for the upload/parse endpoint against fixture CSVs (same fixtures Phase
    1's unit tests use).
 
-3. **Review/decide UI.** Renders an attempt's `import_flagged_items` — needs-confirmation
-   (brand/line/model) / possible-duplicate / unparseable-nib rows, each with its candidate/
-   similarity info where applicable — and lets Ken record a decision on each
-   (`import`/`skip`/`merge_into`/`alias_to`) directly in the browser. Each decision is written
-   straight to that item's row the moment it's made — no batch save, no intermediate file,
-   resumable at any point since nothing is lost between decisions.
-   *Gate:* Playwright test driving the full review flow against a fixture attempt — flag a
-   possible-duplicate, record a decision, assert it's persisted and reflected before commit is
-   enabled.
+3. **Review/decide UI.** Renders an attempt's `import_flagged_items` and lets Ken record a
+   decision on each directly in the browser, written straight to that item's row the moment it's
+   made — no batch save, no intermediate file, resumable at any point since nothing is lost
+   between decisions. Split into sub-steps (3a/3b/3c, not renumbered as separate top-level steps —
+   same non-renumbering convention as Phase 1.1 itself) since the four flagged-row types don't
+   share one UI shape: the two candidate-picking types share more with each other than with the
+   two correction types, and building all four at once risked a large PR with nothing landing.
+   Decided with Ken 2026-08-04.
+
+   3a. **`possible_duplicate` only.** Row-level decision only (`import`/`skip`, no per-field
+       candidate picking) — the simplest shape, and the plan's own original gate example. Renders
+       the match list (existing vs batch, groupKey, similarity). Proves out the whole page shell
+       (load an attempt + its items, decide-on-click via fetch, a commit-enabled indicator once
+       everything's decided) that 3b/3c both reuse.
+       *Gate:* Playwright test — flag a possible-duplicate, record a decision, assert it's
+       persisted and reflected, assert the commit-enabled indicator flips once every item in the
+       attempt is decided.
+
+   3b. **`needs_confirmation`.** Per-field decisions (brand/line/model/nib_* — every field named in
+       `candidate_info.fields`/`nibValueFlags`), each independently `import`/`merge_into`/
+       `alias_to` against its own candidate list (similarity/reasons shown per candidate).
+       *Gate:* Playwright test covering a row with two independently-flagged fields, each decided
+       differently, both persisted.
+
+   3c. **`unparseable_nib` and `unparseable_row` correction UI.** Both need the same shape: show
+       the raw offending value(s) (`Nib` text, or the missing/invalid required fields), let Ken
+       edit `row_data.raw` inline, then decide `import` (re-resolve) or `skip`.
+       *Gate:* Playwright test for each type — correct the raw value, decide import, assert the
+       correction round-trips through re-resolution (may re-flag as a different type, per
+       `resolveRowForCommit` — assert that's reflected too, not silently swallowed).
 
 4. **Commit route.** Refuses if any `import_flagged_items` row under the attempt still has
    `decision = null` (same refusal rule Phase 1's tests already assert against the service
