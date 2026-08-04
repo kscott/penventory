@@ -51,14 +51,24 @@ issue/branch, closed before merge.
    two correction types, and building all four at once risked a large PR with nothing landing.
    Decided with Ken 2026-08-04.
 
-   3a. **`possible_duplicate` only.** Row-level decision only (`import`/`skip`, no per-field
-       candidate picking) — the simplest shape, and the plan's own original gate example. Renders
-       the match list (existing vs batch, groupKey, similarity). Proves out the whole page shell
-       (load an attempt + its items, decide-on-click via fetch, a commit-enabled indicator once
-       everything's decided) that 3b/3c both reuse.
+   3a. **`possible_duplicate` only, plus a minimal open-attempts index.** Row-level decision only
+       (`import`/`skip`, no per-field candidate picking) — the simplest shape, and the plan's own
+       original gate example. Renders the match list (existing vs batch, groupKey, similarity).
+       Proves out the whole page shell (load an attempt + its items, decide-on-click via fetch, a
+       commit-enabled indicator once everything's decided) that 3b/3c both reuse. Also adds
+       `/import` — a flat list of every non-`committed` `import_attempt`, across operation types
+       (not locked to `catalog_import` — step 5's color-refresh attempts belong here too once that
+       exists), linking into each one's review page. Added 2026-08-04: Ken flagged that an attempt
+       has no way to be found again without remembering its URL/id by hand, and separately raised
+       wanting multiple files staged up for processing at once (color-refresh especially) — a
+       type-agnostic index is the natural home for both. Deliberately minimal: no pagination,
+       filtering, or sorting controls — a single-user tool won't realistically have enough
+       concurrent open attempts to need them yet.
        *Gate:* Playwright test — flag a possible-duplicate, record a decision, assert it's
        persisted and reflected, assert the commit-enabled indicator flips once every item in the
-       attempt is decided.
+       attempt is decided. Separate Playwright test for `/import`: create two attempts, assert
+       both are listed and link to their own review page, assert a committed attempt drops off the
+       list.
 
    3b. **`needs_confirmation`.** Per-field decisions (brand/line/model/nib_* — every field named in
        `candidate_info.fields`/`nibValueFlags`), each independently `import`/`merge_into`/
