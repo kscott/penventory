@@ -144,6 +144,14 @@ System` — every schema column with no safe default. `Nib` blank is a real, val
 `Date Added` blank falls back to the DB's own timestamp default rather than blocking the row. See
 [[docs/adr/2026-07-10-unparseable-rows-are-correctable]].
 
+Inks share the same mechanism: required fields are `Brand`, `Name`, `Type`, `Color`, and an
+out-of-set `Type` value (not one of the three fixed enum strings) is also folded into
+`unparseable_row` rather than a reviewable flag — a closed enum has no `merge_into`/`alias_to`
+concept to review. `Tags` imports selectively: `gifted`/`sold` become the `rehomed` reason as a
+freeform note, not tags; everything else is checked against a small hand-maintained allow-list
+(`decide`/`reserved`/`purgatory`) and silently dropped otherwise. See
+[[docs/adr/2026-08-03-ink-import-completeness-review]].
+
 Commit reads by attempt id and refuses if any item is undecided, including per-field. See
 [[docs/adr/2026-07-09-no-cli-at-all-for-import]].
 

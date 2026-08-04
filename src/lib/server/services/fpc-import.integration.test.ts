@@ -24,6 +24,8 @@ import {
 	pen_materials,
 	pen_nibs,
 	pens,
+	tags,
+	taggables,
 	vendors
 } from '../db/schema';
 import type { FieldDecisions } from './decision-resolution';
@@ -703,6 +705,35 @@ describe('fpc-import (parse + commit)', () => {
 			expect(items[0].flag_type).toBe('possible_duplicate');
 			const candidateInfo = items[0].candidate_info as { matches: { matchType: string }[] };
 			expect(candidateInfo.matches[0].matchType).toBe('existing');
+		});
+
+		it('flags a blank required field (Brand) on an ink row as unparseable_row, skipping resolution entirely', () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'blank-brand')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('unparseable_row');
+			expect(items[0].candidate_info).toEqual({ missingFields: ['Brand'] });
+			const rowData = items[0].row_data as { entityType: string; missingFields: string[] };
+			expect(rowData.entityType).toBe('unparseable_row');
+			expect(rowData.missingFields).toEqual(['Brand']);
+			expect(db.select().from(brands).all()).toEqual([]);
+		});
+
+		it('flags a Type value outside the fixed bottle/sample/cartridge set as unparseable_row — a closed enum, not a reviewable field', () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'invalid-type')
+			});
+
+			const items = flaggedItemsFor(attemptId);
+			expect(items[0].flag_type).toBe('unparseable_row');
+			expect(items[0].candidate_info).toEqual({ missingFields: ['Type'] });
+			// Brand was never resolved either — the whole row defers to
+			// correction, same as a blank required field.
+			expect(db.select().from(brands).all()).toEqual([]);
 		});
 
 		it('tracks the source CSV line number on every row, 1-indexed including the header', () => {
@@ -1696,6 +1727,79 @@ describe('fpc-import (parse + commit)', () => {
 			expect(ink.notes).toBe("bought at a pen show\n\ngift for Dana, don't mention");
 		});
 
+		it('imports only the allow-listed status tag (reserved), dropping the color-descriptor tag alongside it (dark gold)', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'tags-plain')
+			});
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const ink = db.select().from(inks).all()[0];
+			const tagRows = db.select().from(tags).all();
+			expect(tagRows.map((t) => t.name)).toEqual(['reserved']);
+
+			const links = db.select().from(taggables).all();
+			expect(links).toHaveLength(1);
+			expect(links[0].taggable_type).toBe('ink');
+			expect(links[0].taggable_id).toBe(ink.id);
+		});
+
+		it('reuses an existing tag by exact name rather than creating a duplicate', async () => {
+			const existing = db.insert(tags).values({ name: 'reserved' }).returning().get();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'tags-plain')
+			});
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const tagRows = db.select().from(tags).all();
+			expect(tagRows.map((t) => t.name)).toEqual(['reserved']);
+			expect(tagRows[0].id).toBe(existing.id);
+		});
+
+		it('imports the "purgatory" status tag — "may want to rehome, haven\'t decided"', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'tags-purgatory')
+			});
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const tagRows = db.select().from(tags).all();
+			expect(tagRows.map((t) => t.name)).toEqual(['purgatory']);
+		});
+
+		it('a "gifted" tag becomes the rehomed reason in notes, not a tags row — and the non-allow-listed tag alongside it (ocean blue) is dropped', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'tags-gifted')
+			});
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const ink = db.select().from(inks).all()[0];
+			expect(ink.ownership_state).toBe('rehomed');
+			expect(ink.notes).toBe('Rehomed: gifted');
+			expect(db.select().from(tags).all()).toEqual([]);
+		});
+
+		it('a "sold" tag becomes the rehomed reason in notes, not a tags row', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'tags-sold')
+			});
+
+			await commitImportAttempt(db, sqlite, attemptId, backupDir);
+
+			const ink = db.select().from(inks).all()[0];
+			expect(ink.ownership_state).toBe('rehomed');
+			expect(ink.notes).toBe('Rehomed: sold');
+			expect(db.select().from(tags).all()).toEqual([]);
+		});
+
 		it('writes an import_runs commit row alongside the parse row', async () => {
 			const { attemptId } = parseCatalogImport(db, {
 				pensCSV: fixture('pens', 'nullable-fields'),
@@ -2049,39 +2153,91 @@ describe('fpc-import (parse + commit)', () => {
 			);
 		});
 
-		it("an ink-side unparseable_row is refused — correction isn't implemented for inks yet", async () => {
-			// Ink-side blank-required-field detection isn't wired into
-			// parseCatalogImport yet (pens-first, per the field-by-field
-			// review sequencing) — constructed directly to prove the guard
-			// exists and fails loudly rather than silently mishandling it
-			// once that gap is closed.
-			const attempt = db
-				.insert(import_attempts)
-				.values({ operation_type: 'catalog_import' })
-				.returning()
-				.get();
-			const item = db
-				.insert(import_flagged_items)
-				.values({
-					import_attempt_id: attempt.id,
-					row_data: {
-						entityType: 'unparseable_row',
-						originalEntityType: 'ink',
-						raw: { Brand: '' },
-						sourceLine: 2,
-						missingFields: ['Brand']
-					},
-					flag_type: 'unparseable_row',
-					candidate_info: { missingFields: ['Brand'] },
-					decision: null
-				})
-				.returning()
-				.get();
+		it('an ink unparseable_row decided "import" without correction refuses again — still missing the same field', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'blank-brand')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
 			decideRow(item.id, 'import');
 
-			await expect(commitImportAttempt(db, sqlite, attempt.id, backupDir)).rejects.toThrow(
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
 				CommitRefusedError
 			);
+			expect(db.select().from(inks).all()).toEqual([]);
+		});
+
+		it('an ink unparseable_row, corrected via row_data.raw and decided "import", resolves and commits cleanly', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'blank-brand')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Brand', 'Fernhollow');
+			decideRow(item.id, 'import');
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.inksCreated).toBe(1);
+
+			const ink = db.select().from(inks).all()[0];
+			const brand = db
+				.select()
+				.from(brands)
+				.all()
+				.find((b) => b.id === ink.brand_id);
+			expect(brand?.name).toBe('Fernhollow');
+		});
+
+		it('an ink unparseable_row from an invalid Type, corrected to a valid one, resolves and commits cleanly', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'invalid-type')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Type', 'bottle');
+			decideRow(item.id, 'import');
+
+			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
+			expect(result.inksCreated).toBe(1);
+			expect(db.select().from(inks).all()[0].type).toBe('bottle');
+		});
+
+		it('an ink unparseable_row corrected to a Type that is still invalid refuses again rather than committing garbage', async () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'invalid-type')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Type', 'vial');
+			decideRow(item.id, 'import');
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+			expect(db.select().from(inks).all()).toEqual([]);
+		});
+
+		it('an ink unparseable_row, corrected to a Brand that is itself now ambiguous, gets re-flagged (same row, in place) rather than committed blind', async () => {
+			db.insert(brands).values({ name: 'Wavecrest' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'blank-brand')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			correctRawField(item.id, 'Brand', 'Wavecrst'); // typo of the seeded brand
+			decideRow(item.id, 'import');
+
+			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
+				CommitRefusedError
+			);
+
+			expect(db.select().from(inks).all()).toEqual([]);
+			const items = flaggedItemsFor(attemptId);
+			expect(items).toHaveLength(1);
+			expect(items[0].id).toBe(item.id);
+			expect(items[0].flag_type).toBe('needs_confirmation');
+			expect(items[0].decision).toBeNull();
 		});
 
 		it('correcting Nib to blank means "no nib after all" — commits the pen with no nib, not a re-thrown error', async () => {

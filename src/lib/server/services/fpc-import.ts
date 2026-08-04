@@ -12,6 +12,7 @@ import {
 	import_attempts,
 	import_flagged_items,
 	import_runs,
+	INK_TYPES,
 	inks,
 	lines,
 	models,
@@ -24,9 +25,12 @@ import {
 	pen_materials,
 	pen_nibs,
 	pens,
+	tags,
+	taggables,
 	vendors,
 	type AliasableType,
-	type ImportFlagType
+	type ImportFlagType,
+	type InkType
 } from '../db/schema';
 import type * as schema from '../db/schema';
 import {
@@ -69,6 +73,29 @@ function blankRequiredFields(raw: RawCsvRow, required: string[]): string[] {
 	return required.filter((key) => !raw[key] || raw[key].trim() === '');
 }
 
+// Ground truth is inks' actual .notNull() columns in schema.ts: brand_id,
+// name, type, color_fpc. Line/Maker are nullable (real, confirmed case: FPC
+// leaves Line blank for most inks) — deliberately excluded, same reasoning
+// PEN_REQUIRED_FIELDS gives for Trim Color.
+const INK_REQUIRED_FIELDS = ['Brand', 'Name', 'Type', 'Color'];
+
+// Type is a closed 3-value enum (INK_TYPES), not an open collector
+// vocabulary — Drizzle's SQLite `enum` option isn't DB-enforced (confirmed
+// the same way the nib-purities/base-sizes finding was: it emits a plain
+// `text` column), so an invalid value would otherwise write silently. Folded
+// into the same correctable unparseable_row path as a blank required field
+// (missingFields doubles for "invalid value" here — there's no separate
+// correction UX, and both cases need the same fix: edit row_data.raw and
+// re-resolve) rather than a flagged/reviewable field — a value outside three
+// fixed strings isn't something merge_into/alias_to make sense for.
+function inkRowProblems(raw: RawCsvRow): string[] {
+	const problems = blankRequiredFields(raw, INK_REQUIRED_FIELDS);
+	if (!problems.includes('Type') && !INK_TYPES.includes(raw.Type as InkType)) {
+		problems.push('Type');
+	}
+	return problems;
+}
+
 // --- Row snapshots persisted in import_flagged_items.row_data --------------
 // Everything commit needs to write the row, whether or not it needed a
 // decision — see the schema comment on import_flagged_items for why this
@@ -106,6 +133,7 @@ type InkRowData = {
 	type: string;
 	colorFpc: string;
 	notes: string | null;
+	tagNames: string[];
 	ownershipState: 'active' | 'rehomed';
 	ownershipChangedOn: string | null;
 	createdAt: string;
@@ -277,6 +305,16 @@ function loadExistingInkIdentities(db: Db): IdentityCandidate[] {
 	}));
 }
 
+// Exact-match find-or-create — tags.name is unique, and read-your-own-writes
+// (same connection, same transaction at commit time) means two rows in this
+// same commit introducing the same brand-new tag name both resolve to the
+// one row the first insert created, never two.
+function findOrCreateTag(tx: Db, name: string): number {
+	const existing = tx.select().from(tags).where(eq(tags.name, name)).get();
+	if (existing) return existing.id;
+	return create(tx, tags, { name }).id;
+}
+
 // --- Field resolution --------------------------------------------------------
 // Extracted so the exact same resolution logic runs whether a row is being
 // resolved fresh at parse, or re-resolved at commit after a correction (see
@@ -369,6 +407,105 @@ function buildPenRowData(
 		color: raw.Color,
 		notes: raw.Comment || null,
 		ownershipState: raw.Archived === 'true' ? 'retired' : 'active',
+		ownershipChangedOn: raw.Archived === 'true' ? raw['Archived On'] || null : null,
+		createdAt: raw['Date Added'],
+		...resolution
+	};
+}
+
+// Extracted so the exact same resolution runs whether an ink row is being
+// resolved fresh at parse, or re-resolved at commit after an
+// unparseable_row correction — same reasoning as resolvePenFields.
+type InkFieldResolution = {
+	brand: ResolveResult;
+	line: ResolveResult | null;
+	maker: ResolveResult | null;
+};
+
+function resolveInkFields(db: Db, raw: RawCsvRow): InkFieldResolution {
+	const brand = resolveOrFlag(db, 'brand', raw.Brand);
+	const line = raw.Line
+		? brand.outcome === 'resolved'
+			? resolveOrFlag(db, 'line', raw.Line, brand.id)
+			: null
+		: null;
+	const maker = raw.Maker ? resolveOrFlag(db, 'brand', raw.Maker) : null;
+	return { brand, line, maker };
+}
+
+function inkFlaggableResolutions(
+	resolution: InkFieldResolution
+): { field: string; result: ResolveResult }[] {
+	return [
+		{ field: 'brand', result: resolution.brand },
+		...(resolution.line ? [{ field: 'line', result: resolution.line }] : []),
+		...(resolution.maker ? [{ field: 'maker', result: resolution.maker }] : [])
+	];
+}
+
+// Confirmed real delimiter (2026-08-03 pass, 259 real rows): every non-blank
+// Tags value is comma-separated, no other separator convention appears.
+// `gifted`/`sold` are pulled out as the ownership-change *reason*, not
+// imported as tags — Ken's call: they're events (the ink left the
+// collection), not ad hoc curation labels. Confirmed real data: every row
+// tagged either word already has Archived=true, and no row carries both.
+const OWNERSHIP_REASON_TAGS = ['gifted', 'sold'];
+
+// The rest of Tags is mostly personal shorthand Ken doesn't want carried
+// over wholesale — color-descriptor labels, gift-recipient names, one-off
+// codes. Explicit allow-list, not an exclude-list: only these function as ad
+// hoc curation the same way gifted/sold do. "purgatory" specifically means
+// "may want to rehome, haven't decided yet" — Ken's own words, 2026-08-03.
+// Everything else in Tags is silently dropped, not imported as a tag.
+const IMPORTABLE_STATUS_TAGS = ['decide', 'reserved', 'purgatory'];
+
+function parseInkTags(raw: RawCsvRow): { tagNames: string[]; ownershipReason: string | null } {
+	const pieces = raw.Tags.split(',')
+		.map((t) => t.trim())
+		.filter((t) => t !== '');
+	const ownershipReason =
+		pieces.find((p) => OWNERSHIP_REASON_TAGS.includes(p.toLowerCase())) ?? null;
+	const tagNames = pieces.filter(
+		(p) => p !== ownershipReason && IMPORTABLE_STATUS_TAGS.includes(p.toLowerCase())
+	);
+	return { tagNames, ownershipReason };
+}
+
+// Private, Swabbed, Used, Usage, Daily Usage, and Last Usage are
+// deliberately never read here — confirmed with Ken (2026-08-03), not
+// oversights:
+//   - Private: always false across all 259 real rows, zero signal either
+//     way, no schema column — reads like FPC's own community-sharing flag,
+//     which has no meaning in a single-user app.
+//   - Swabbed: a real, distinct fact (has this ink actually been swatched),
+//     but doesn't map to inks.swatched — that's a Phase 3 computed column
+//     (true once a swatch photo exists). Ignored on import; Phase 3 will
+//     recompute it correctly once real swatch photos exist.
+//   - Used/Usage/Daily Usage/Last Usage: all derived from usage entries,
+//     which come in via a separate import (currently_inked.csv / inkings,
+//     Phase 4) or get created fresh in the app going forward — nothing here
+//     needs to read FPC's own computed snapshot of them.
+function buildInkRowData(
+	raw: RawCsvRow,
+	sourceLine: number,
+	resolution: InkFieldResolution
+): InkRowData {
+	const { tagNames, ownershipReason } = parseInkTags(raw);
+	const notesParts = [
+		raw.Comment,
+		raw['Private Comment'],
+		ownershipReason ? `Rehomed: ${ownershipReason}` : null
+	].filter((v): v is string => !!v && v.trim() !== '');
+	return {
+		entityType: 'ink',
+		raw,
+		sourceLine,
+		name: raw.Name,
+		type: raw.Type,
+		colorFpc: raw.Color,
+		notes: notesParts.length > 0 ? notesParts.join('\n\n') : null,
+		tagNames,
+		ownershipState: raw.Archived === 'true' ? 'rehomed' : 'active',
 		ownershipChangedOn: raw.Archived === 'true' ? raw['Archived On'] || null : null,
 		createdAt: raw['Date Added'],
 		...resolution
@@ -512,15 +649,25 @@ export function parseCatalogImport(
 	for (const [index, raw] of inksRaw.entries()) {
 		const sourceLine = index + 2;
 
-		const brand = resolveOrFlag(db, 'brand', raw.Brand);
-		const line = raw.Line
-			? brand.outcome === 'resolved'
-				? resolveOrFlag(db, 'line', raw.Line, brand.id)
-				: null
-			: null;
-		const maker = raw.Maker ? resolveOrFlag(db, 'brand', raw.Maker) : null;
+		const problems = inkRowProblems(raw);
+		if (problems.length > 0) {
+			const rowData: UnparseableRowData = {
+				entityType: 'unparseable_row',
+				originalEntityType: 'ink',
+				raw,
+				sourceLine,
+				missingFields: problems
+			};
+			writeFlaggedItem(db, attempt.id, rowData, {
+				flagType: 'unparseable_row',
+				candidateInfo: { missingFields: problems }
+			});
+			flaggedCount++;
+			continue;
+		}
 
-		const groupKey = inkIdentityGroupKey(raw, brand, line);
+		const resolution = resolveInkFields(db, raw);
+		const groupKey = inkIdentityGroupKey(raw, resolution.brand, resolution.line);
 		let dupMatches: DuplicateMatch[] = [];
 		if (groupKey !== null) {
 			dupMatches = findDuplicateMatches(
@@ -532,29 +679,8 @@ export function parseCatalogImport(
 			batchInkIdentities.push({ id: sourceLine, groupKey, freeText: raw.Name });
 		}
 
-		const notesParts = [raw.Comment, raw['Private Comment']].filter((v) => v && v.trim() !== '');
-
-		const rowData: InkRowData = {
-			entityType: 'ink',
-			raw,
-			sourceLine,
-			name: raw.Name,
-			type: raw.Type,
-			colorFpc: raw.Color,
-			notes: notesParts.length > 0 ? notesParts.join('\n\n') : null,
-			ownershipState: raw.Archived === 'true' ? 'rehomed' : 'active',
-			ownershipChangedOn: raw.Archived === 'true' ? raw['Archived On'] || null : null,
-			createdAt: raw['Date Added'],
-			brand,
-			line,
-			maker
-		};
-
-		const flaggedFields = fieldsNeedingConfirmation([
-			{ field: 'brand', result: brand },
-			...(line ? [{ field: 'line', result: line }] : []),
-			...(maker ? [{ field: 'maker', result: maker }] : [])
-		]);
+		const rowData = buildInkRowData(raw, sourceLine, resolution);
+		const flaggedFields = fieldsNeedingConfirmation(inkFlaggableResolutions(resolution));
 		const flag = determineFlag(dupMatches, null, flaggedFields);
 		writeFlaggedItem(db, attempt.id, rowData, flag);
 		if (flag) flaggedCount++;
@@ -697,40 +823,61 @@ function resolveRowForCommit(
 				`row ${item.id} (line ${rowData.sourceLine}): unparseable_row can only be 'import' (corrected, re-resolve) or 'skip'`
 			);
 		}
-		if (rowData.originalEntityType !== 'pen') {
+		if (rowData.originalEntityType === 'pen') {
+			const missing = blankRequiredFields(rowData.raw, PEN_REQUIRED_FIELDS);
+			if (missing.length > 0) {
+				throw new CommitRefusedError(
+					`row ${item.id} (line ${rowData.sourceLine}): still missing required fields: ${missing.join(', ')}`
+				);
+			}
+			const resolution = resolvePenFields(tx, rowData.raw);
+			const newRowData = buildPenRowData(rowData.raw, rowData.sourceLine, resolution);
+			// Duplicate detection itself is NOT run here — it's deferred to the
+			// universal, authoritative check runCommitTransaction runs right
+			// before actually creating the pen, once every controlled field has
+			// its final resolved id (this row's identity can't be reliably known
+			// yet at this point the same way a fresh parse-time row often can't —
+			// see penIdentityGroupKey). That single check point covers every pen
+			// unconditionally, corrected-unparseable_row included, so there's no
+			// need for a second, earlier, necessarily-partial one here. See
+			// docs/adr/2026-07-10-identity-key-is-resolved-not-raw-text.md.
+			const flaggedFields = fieldsNeedingConfirmation(penFlaggableResolutions(resolution));
+			const flag = determineFlag([], resolution.nib, flaggedFields);
+			if (flag) {
+				newFlags.push({
+					originalItemId: item.id,
+					rowData: newRowData,
+					flagType: flag.flagType,
+					candidateInfo: flag.candidateInfo
+				});
+				return null;
+			}
+			return newRowData;
+		}
+
+		// Ink side — mirrors the pen branch above exactly (see its comment for
+		// why duplicate detection is deferred to the universal commit-time
+		// check rather than re-run here).
+		const problems = inkRowProblems(rowData.raw);
+		if (problems.length > 0) {
 			throw new CommitRefusedError(
-				`row ${item.id} (line ${rowData.sourceLine}): ink unparseable_row correction isn't implemented yet`
+				`row ${item.id} (line ${rowData.sourceLine}): still missing or invalid required fields: ${problems.join(', ')}`
 			);
 		}
-		const missing = blankRequiredFields(rowData.raw, PEN_REQUIRED_FIELDS);
-		if (missing.length > 0) {
-			throw new CommitRefusedError(
-				`row ${item.id} (line ${rowData.sourceLine}): still missing required fields: ${missing.join(', ')}`
-			);
-		}
-		const resolution = resolvePenFields(tx, rowData.raw);
-		const newRowData = buildPenRowData(rowData.raw, rowData.sourceLine, resolution);
-		// Duplicate detection itself is NOT run here — it's deferred to the
-		// universal, authoritative check runCommitTransaction runs right
-		// before actually creating the pen, once every controlled field has
-		// its final resolved id (this row's identity can't be reliably known
-		// yet at this point the same way a fresh parse-time row often can't —
-		// see penIdentityGroupKey). That single check point covers every pen
-		// unconditionally, corrected-unparseable_row included, so there's no
-		// need for a second, earlier, necessarily-partial one here. See
-		// docs/adr/2026-07-10-identity-key-is-resolved-not-raw-text.md.
-		const flaggedFields = fieldsNeedingConfirmation(penFlaggableResolutions(resolution));
-		const flag = determineFlag([], resolution.nib, flaggedFields);
-		if (flag) {
+		const inkResolution = resolveInkFields(tx, rowData.raw);
+		const newInkRowData = buildInkRowData(rowData.raw, rowData.sourceLine, inkResolution);
+		const inkFlaggedFields = fieldsNeedingConfirmation(inkFlaggableResolutions(inkResolution));
+		const inkFlag = determineFlag([], null, inkFlaggedFields);
+		if (inkFlag) {
 			newFlags.push({
 				originalItemId: item.id,
-				rowData: newRowData,
-				flagType: flag.flagType,
-				candidateInfo: flag.candidateInfo
+				rowData: newInkRowData,
+				flagType: inkFlag.flagType,
+				candidateInfo: inkFlag.candidateInfo
 			});
 			return null;
 		}
-		return newRowData;
+		return newInkRowData;
 	}
 
 	// Keyed off the row's actual nib data, not item.flag_type — a row whose
@@ -1223,7 +1370,7 @@ function runCommitTransaction(
 					}
 				}
 
-				create(tx, inks, {
+				const ink = create(tx, inks, {
 					brand_id: brandId,
 					line_id: lineId,
 					maker_id: makerId,
@@ -1238,6 +1385,18 @@ function runCommitTransaction(
 					created_at: new Date(rowData.createdAt)
 				});
 				counters.onInkCreated();
+
+				// Exact-match only, created unconditionally — unlike controlled-
+				// list fields (brand/line/nib_*), tags never go through
+				// resolveOrFlag/a field_decision: they're informal user-curated
+				// free text (see parseInkTags), not a vocabulary that needs
+				// typo/alias review.
+				for (const tagName of rowData.tagNames) {
+					const tagId = findOrCreateTag(tx, tagName);
+					tx.insert(taggables)
+						.values({ tag_id: tagId, taggable_type: 'ink', taggable_id: ink.id })
+						.run();
+				}
 			}
 		}
 
