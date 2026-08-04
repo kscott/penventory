@@ -29,12 +29,24 @@ import {
 	vendors
 } from '../db/schema';
 import type { FieldDecisions } from './decision-resolution';
-import { CommitRefusedError, commitImportAttempt, parseCatalogImport } from './fpc-import';
+import {
+	CommitRefusedError,
+	commitImportAttempt,
+	parseCatalogImport,
+	reevaluateFlaggedItem
+} from './fpc-import';
 
 const FIXTURES_DIR = join(process.cwd(), 'tests', 'fixtures', 'fpc-export');
 
 function fixture(kind: 'pens' | 'inks', name: string): string {
 	return readFileSync(join(FIXTURES_DIR, kind, `${name}.csv`), 'utf-8');
+}
+
+// row_data is typed as Record<string, unknown> at the schema level — every
+// stored variant (PenRowData/InkRowData/UnparseableRowData) always has a
+// `raw` field, so this cast is safe for any flagged item.
+function rawOf(item: { row_data: unknown }): Record<string, string> {
+	return (item.row_data as { raw: Record<string, string> }).raw;
 }
 
 describe('fpc-import (parse + commit)', () => {
@@ -745,6 +757,143 @@ describe('fpc-import (parse + commit)', () => {
 			const items = flaggedItemsFor(attemptId).sort((a, b) => a.id - b.id);
 			const sourceLines = items.map((item) => (item.row_data as { sourceLine: number }).sourceLine);
 			expect(sourceLines).toEqual([2, 3]);
+		});
+	});
+
+	describe('reevaluateFlaggedItem', () => {
+		it('an edit that resolves an ink possible_duplicate clears the flag and auto-decides import, same as a never-flagged row', () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'exact-duplicate')
+			});
+			const items = flaggedItemsFor(attemptId).sort((a, b) => a.id - b.id);
+			expect(items[1].flag_type).toBe('possible_duplicate');
+
+			reevaluateFlaggedItem(db, items[1], { ...rawOf(items[1]), Name: 'Obsidian Tide' });
+
+			const updated = flaggedItemsFor(attemptId).find((i) => i.id === items[1].id)!;
+			expect(updated.flag_type).toBeNull();
+			expect(updated.decision).toBe('import');
+			expect(updated.decided_at).not.toBeNull();
+			expect((updated.row_data as { name: string }).name).toBe('Obsidian Tide');
+		});
+
+		it('an edit that resolves a pen possible_duplicate clears the flag, checking siblings from the same attempt not just the real catalog', () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'exact-duplicate'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const items = flaggedItemsFor(attemptId).sort((a, b) => a.id - b.id);
+			expect(items[1].flag_type).toBe('possible_duplicate');
+
+			reevaluateFlaggedItem(db, items[1], { ...rawOf(items[1]), Color: 'Teal' });
+
+			const updated = flaggedItemsFor(attemptId).find((i) => i.id === items[1].id)!;
+			expect(updated.flag_type).toBeNull();
+			expect(updated.decision).toBe('import');
+		});
+
+		it('clearing a pen required field (Brand) leaves it unparseable_row, same as the ink case', () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'exact-duplicate'),
+				inksCSV: fixture('inks', 'empty')
+			});
+			const items = flaggedItemsFor(attemptId).sort((a, b) => a.id - b.id);
+
+			reevaluateFlaggedItem(db, items[1], { ...rawOf(items[1]), Brand: '' });
+
+			const updated = flaggedItemsFor(attemptId).find((i) => i.id === items[1].id)!;
+			expect(updated.flag_type).toBe('unparseable_row');
+			expect(updated.decision).toBeNull();
+			const candidateInfo = updated.candidate_info as { missingFields: string[] };
+			expect(candidateInfo.missingFields).toEqual(['Brand']);
+			expect((updated.row_data as { originalEntityType: string }).originalEntityType).toBe('pen');
+		});
+
+		it('an edit that turns a possible_duplicate into needs_confirmation reflects the new flag type, not the old one', () => {
+			db.insert(brands).values({ name: 'Wavecrest' }).run();
+
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'exact-duplicate')
+			});
+			const items = flaggedItemsFor(attemptId).sort((a, b) => a.id - b.id);
+
+			// Change Name (clears the duplicate) AND Brand to a typo of the
+			// seeded brand (introduces new ambiguity) in the same edit.
+			reevaluateFlaggedItem(db, items[1], {
+				...rawOf(items[1]),
+				Name: 'Obsidian Tide',
+				Brand: 'Wavecrst'
+			});
+
+			const updated = flaggedItemsFor(attemptId).find((i) => i.id === items[1].id)!;
+			expect(updated.flag_type).toBe('needs_confirmation');
+			expect(updated.decision).toBeNull();
+			const candidateInfo = updated.candidate_info as { fields: Record<string, unknown> };
+			expect(Object.keys(candidateInfo.fields)).toEqual(['brand']);
+		});
+
+		it('an edit that fills a blank required field resolves an unparseable_row into a clean, auto-decided row', () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'blank-brand')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			expect(item.flag_type).toBe('unparseable_row');
+
+			reevaluateFlaggedItem(db, item, { ...rawOf(item), Brand: 'Fernhollow' });
+
+			const updated = flaggedItemsFor(attemptId).find((i) => i.id === item.id)!;
+			expect(updated.flag_type).toBeNull();
+			expect(updated.decision).toBe('import');
+			expect((updated.row_data as { entityType: string }).entityType).toBe('ink');
+		});
+
+		it('an edit that clears the required field again still leaves it unparseable_row, not silently accepted', () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'blank-brand')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+
+			reevaluateFlaggedItem(db, item, { ...rawOf(item), Name: 'Still No Brand' });
+
+			const updated = flaggedItemsFor(attemptId).find((i) => i.id === item.id)!;
+			expect(updated.flag_type).toBe('unparseable_row');
+			expect(updated.decision).toBeNull();
+			const candidateInfo = updated.candidate_info as { missingFields: string[] };
+			expect(candidateInfo.missingFields).toEqual(['Brand']);
+		});
+
+		it('clearing a previously-populated optional field (Line) is honored, not just filling blanks', () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'with-line')
+			});
+			const item = flaggedItemsFor(attemptId)[0];
+			expect(rawOf(item).Line).not.toBe('');
+
+			reevaluateFlaggedItem(db, item, { ...rawOf(item), Line: '' });
+
+			const updated = flaggedItemsFor(attemptId).find((i) => i.id === item.id)!;
+			const rowData = updated.row_data as { line: unknown };
+			expect(rowData.line).toBeNull();
+		});
+
+		it('re-evaluating does not disturb other items in the same attempt', () => {
+			const { attemptId } = parseCatalogImport(db, {
+				pensCSV: fixture('pens', 'empty'),
+				inksCSV: fixture('inks', 'exact-duplicate')
+			});
+			const items = flaggedItemsFor(attemptId).sort((a, b) => a.id - b.id);
+			const firstItemBefore = items[0];
+
+			reevaluateFlaggedItem(db, items[1], { ...rawOf(items[1]), Name: 'Obsidian Tide' });
+
+			const firstItemAfter = flaggedItemsFor(attemptId).find((i) => i.id === firstItemBefore.id)!;
+			expect(firstItemAfter.flag_type).toBe(firstItemBefore.flag_type);
+			expect(firstItemAfter.row_data).toEqual(firstItemBefore.row_data);
 		});
 	});
 

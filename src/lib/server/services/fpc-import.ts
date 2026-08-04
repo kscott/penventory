@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import { parse } from 'csv-parse/sync';
-import { eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { backupDatabase } from '../backup';
 import { create } from '../db/repository';
@@ -700,6 +700,193 @@ export function parseCatalogImport(
 		.run();
 
 	return { attemptId: attempt.id };
+}
+
+// --- Interactive re-evaluation (review UI) -----------------------------------
+// Any raw field on any flagged row is editable, for every flag type — not a
+// correction path reserved for unparseable_row/unparseable_nib. Confirmed
+// with Ken 2026-08-04: this covers fixing a wrong value, filling in a blank
+// one, or clearing a value that shouldn't have been there — all the same
+// operation from this function's point of view, since every case just means
+// "the raw data is different now, re-run the same pipeline parse already
+// uses." Reuses every low-level piece parse does (resolvePenFields/
+// resolveInkFields, buildPenRowData/buildInkRowData, the identity-key
+// functions, findDuplicateMatches, determineFlag) rather than a second,
+// parallel implementation that could drift.
+//
+// Unlike resolveRowForCommit (which only fires at commit time, and only for
+// unparseable_row/unparseable_nib), this is callable any time, for any
+// flagged row, from the review UI — the point is seeing the result
+// immediately, not waiting for a commit attempt to discover it.
+
+function resolveOriginalEntityType(rowData: RowData): 'pen' | 'ink' {
+	return rowData.entityType === 'unparseable_row' ? rowData.originalEntityType : rowData.entityType;
+}
+
+// "Batch" identities, sourced from every other still-pending item in the
+// same attempt rather than an in-memory accumulator (parse's own
+// batchPenIdentities/batchInkIdentities exist only for the duration of one
+// parseCatalogImport call) — each sibling's own already-computed resolution
+// is reused as-is, not re-resolved, since only the row actually being edited
+// has new raw data. A sibling that's itself still an unparseable_row
+// contributes nothing — same as at parse time, where such a row never
+// reaches the identity/duplicate-detection code at all.
+function loadSiblingPenIdentities(
+	db: Db,
+	attemptId: number,
+	excludeItemId: number
+): IdentityCandidate[] {
+	const siblings = db
+		.select()
+		.from(import_flagged_items)
+		.where(
+			and(
+				eq(import_flagged_items.import_attempt_id, attemptId),
+				ne(import_flagged_items.id, excludeItemId)
+			)
+		)
+		.all();
+
+	const candidates: IdentityCandidate[] = [];
+	for (const sibling of siblings) {
+		const rowData = sibling.row_data as unknown as RowData;
+		if (rowData.entityType !== 'pen') continue;
+		// PenRowData carries every PenFieldResolution field (buildPenRowData
+		// spreads `...resolution` into it) — safe to pass directly.
+		const groupKey = penIdentityGroupKey(rowData.raw, rowData);
+		if (groupKey === null) continue;
+		candidates.push({ id: rowData.sourceLine, groupKey, freeText: rowData.color });
+	}
+	return candidates;
+}
+
+function loadSiblingInkIdentities(
+	db: Db,
+	attemptId: number,
+	excludeItemId: number
+): IdentityCandidate[] {
+	const siblings = db
+		.select()
+		.from(import_flagged_items)
+		.where(
+			and(
+				eq(import_flagged_items.import_attempt_id, attemptId),
+				ne(import_flagged_items.id, excludeItemId)
+			)
+		)
+		.all();
+
+	const candidates: IdentityCandidate[] = [];
+	for (const sibling of siblings) {
+		const rowData = sibling.row_data as unknown as RowData;
+		if (rowData.entityType !== 'ink') continue;
+		const groupKey = inkIdentityGroupKey(rowData.raw, rowData.brand, rowData.line);
+		if (groupKey === null) continue;
+		candidates.push({ id: rowData.sourceLine, groupKey, freeText: rowData.name });
+	}
+	return candidates;
+}
+
+// Clean (flag === null) behaves exactly like a never-flagged row already
+// does at parse time: auto-decided 'import', no reviewer click required —
+// there's nothing to distinguish "was always clean" from "became clean after
+// an edit." Anything still flagged (even a different flag_type than before)
+// resets decision/decision_target_id/field_decisions to null: an edit alone
+// never resolves ambiguity by itself, only clears the ambiguity that editing
+// actually fixed.
+function writeReevaluatedItem(db: Db, itemId: number, rowData: RowData, flag: Flag | null) {
+	db.update(import_flagged_items)
+		.set({
+			row_data: rowData,
+			flag_type: flag?.flagType ?? null,
+			candidate_info: flag?.candidateInfo ?? null,
+			decision: flag ? null : 'import',
+			decision_target_id: null,
+			field_decisions: null,
+			decided_at: flag ? null : new Date()
+		})
+		.where(eq(import_flagged_items.id, itemId))
+		.run();
+}
+
+function writeReevaluatedUnparseableRow(
+	db: Db,
+	itemId: number,
+	originalEntityType: 'pen' | 'ink',
+	raw: RawCsvRow,
+	sourceLine: number,
+	missingFields: string[]
+) {
+	const rowData: UnparseableRowData = {
+		entityType: 'unparseable_row',
+		originalEntityType,
+		raw,
+		sourceLine,
+		missingFields
+	};
+	db.update(import_flagged_items)
+		.set({
+			row_data: rowData,
+			flag_type: 'unparseable_row',
+			candidate_info: { missingFields },
+			decision: null,
+			decision_target_id: null,
+			field_decisions: null,
+			decided_at: null
+		})
+		.where(eq(import_flagged_items.id, itemId))
+		.run();
+}
+
+export function reevaluateFlaggedItem(db: Db, item: FlaggedItemRow, correctedRaw: RawCsvRow): void {
+	const currentRowData = item.row_data as unknown as RowData;
+	const originalEntityType = resolveOriginalEntityType(currentRowData);
+	const sourceLine = currentRowData.sourceLine;
+
+	if (originalEntityType === 'pen') {
+		const missing = blankRequiredFields(correctedRaw, PEN_REQUIRED_FIELDS);
+		if (missing.length > 0) {
+			writeReevaluatedUnparseableRow(db, item.id, 'pen', correctedRaw, sourceLine, missing);
+			return;
+		}
+		const resolution = resolvePenFields(db, correctedRaw);
+		const groupKey = penIdentityGroupKey(correctedRaw, resolution);
+		let dupMatches: DuplicateMatch[] = [];
+		if (groupKey !== null) {
+			dupMatches = findDuplicateMatches(
+				groupKey,
+				correctedRaw.Color,
+				loadExistingPenIdentities(db),
+				loadSiblingPenIdentities(db, item.import_attempt_id, item.id)
+			);
+		}
+		const rowData = buildPenRowData(correctedRaw, sourceLine, resolution);
+		const flaggedFields = fieldsNeedingConfirmation(penFlaggableResolutions(resolution));
+		const flag = determineFlag(dupMatches, resolution.nib, flaggedFields);
+		writeReevaluatedItem(db, item.id, rowData, flag);
+		return;
+	}
+
+	const problems = inkRowProblems(correctedRaw);
+	if (problems.length > 0) {
+		writeReevaluatedUnparseableRow(db, item.id, 'ink', correctedRaw, sourceLine, problems);
+		return;
+	}
+	const resolution = resolveInkFields(db, correctedRaw);
+	const groupKey = inkIdentityGroupKey(correctedRaw, resolution.brand, resolution.line);
+	let dupMatches: DuplicateMatch[] = [];
+	if (groupKey !== null) {
+		dupMatches = findDuplicateMatches(
+			groupKey,
+			correctedRaw.Name,
+			loadExistingInkIdentities(db),
+			loadSiblingInkIdentities(db, item.import_attempt_id, item.id)
+		);
+	}
+	const rowData = buildInkRowData(correctedRaw, sourceLine, resolution);
+	const flaggedFields = fieldsNeedingConfirmation(inkFlaggableResolutions(resolution));
+	const flag = determineFlag(dupMatches, null, flaggedFields);
+	writeReevaluatedItem(db, item.id, rowData, flag);
 }
 
 // --- Commit --------------------------------------------------------------
