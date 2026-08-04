@@ -22,7 +22,6 @@ and *why*; this one covers *how*.
 | E2E/contract testing | Playwright | Drives a real browser for UI behavior (the shuffle animation, filters); also used to hit real HTTP endpoints for API contract tests. |
 | Logging | `pino` | Structured JSON logs at service boundaries — not `console.log`. |
 | Metrics | `prom-client` | Exposes `/metrics` for the existing Prometheus instance on Quarto to scrape. |
-| Auth | Lightweight session-cookie, single seeded user | Tailscale is the real security boundary (private network, no public exposure); this is defense-in-depth behind it, not the primary control. |
 | Hosting | Docker on Secondo, `personal-apps` stack | See Infrastructure section below — reasoning for host placement and stack grouping. |
 | AI | Claude API / skill | Deferred to the ledger/suggestion phase (Phase 4+) — no cost or dependency during the visuals-first build. |
 
@@ -396,16 +395,6 @@ response_summary       text
 created_at
 ```
 
-### users / sessions
-Named as a Stack-level decision ("lightweight session-cookie, single seeded user") but never
-actually scheduled into a phase or given a schema — a real, total gap, not a small oversight.
-Minimal, since there's exactly one user, ever, manually seeded — no registration flow, no
-password reset, no multi-user anything.
-```
-users:    id, username, password_hash, created_at
-sessions: id, user_id → users, session_token (unique), expires_at, created_at
-```
-
 ### import_runs
 Audit log for the now-four distinct import/refresh operations (catalog import, FPC color
 refresh, `colorimeter.csv` import, `currently_inked.csv` historical import) — each involves
@@ -467,13 +456,14 @@ All of the above green before any real feature exists.
   (`lib/server/services`), tested directly against checked-in fixture CSVs
 - **No CLI at all, not even for local testing** — see
   `docs/adr/2026-07-09-no-cli-at-all-for-import.md`. There is no way to import real data anywhere, even locally,
-  until Phase 1.1 wraps this same service logic in an authenticated web feature.
+  until Phase 1.1 wraps this same service logic in a real web feature.
 
 ### Phase 1.1 — Import
-- Auth (lightweight session-cookie, single seeded user) + the real `db` client module — needed
-  here, not held for Phase 2, since this is the first thing that needs a genuine persistent
-  connection at all
-- Authenticated import route(s): upload `collected_pens.csv`/`collected_inks.csv`, parse (creates
+- The real `db` client module — needed here, not held for Phase 2, since this is the first thing
+  that needs a genuine persistent connection at all. No auth — see
+  `docs/adr/2026-08-03-auth-dropped-tailscale-is-the-only-gate.md`; Tailscale is the only access
+  gate, single-user product, nothing else reaches it.
+- Import route(s): upload `collected_pens.csv`/`collected_inks.csv`, parse (creates
   `import_attempts`/`import_flagged_items`), review/decide flagged items in the UI, commit —
   reuses Phase 1's service logic directly, doesn't reimplement it
 - Same treatment for the color-refresh operation

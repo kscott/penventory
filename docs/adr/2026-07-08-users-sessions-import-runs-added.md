@@ -1,6 +1,7 @@
 # `users`/`sessions` and `import_runs` added — both real gaps, not additions
 
-**Status:** Accepted
+**Status:** Accepted (auth half superseded — see
+[[2026-08-03-auth-dropped-tailscale-is-the-only-gate]]; `import_runs` stands)
 
 **Context:**
 Auth was named as a Stack-level decision (`project-plan.md`: "lightweight session-cookie, single
