@@ -10,15 +10,6 @@ issue and gets removed from here, not left in both places.
   before-you-buy workflow itself is explicitly deprioritized to "someday" (vision.md), and this
   is a detail of a feature that isn't being built yet. Revisit if/when that workflow gets built.
 
-- **`sqlite.pragma('foreign_keys = ON')` is currently test-only.** No production DB connection
-  code exists yet anywhere in `src/lib/server` (every service takes a `db`/`sqlite` handle as a
-  parameter — nothing calls `new Database(...)` outside tests), so there's nowhere in the real app
-  to set this pragma yet. Found while auditing import-time safety: a `merge_into`/`decision_target_id`
-  pointing at a row that doesn't exist relies entirely on FK enforcement to fail loudly rather than
-  writing an orphaned reference — that only holds if whatever wires up the real production
-  connection (Phase 1.1 or later) remembers to set this pragma. Revisit when that connection-setup
-  code gets written.
-
 - **Loose/spare nib inventory + reassign-existing-nib UI.** Confirmed 2026-07-10 (Ken): he owns
   standalone Esterbrook nibs not currently installed in any pen, in the same common sizes several
   of his pens already use. The schema already supports this (a `nibs` row with no `pen_nibs` entry
