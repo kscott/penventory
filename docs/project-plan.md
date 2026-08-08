@@ -465,9 +465,13 @@ All of the above green before any real feature exists.
   that needs a genuine persistent connection at all. No auth — see
   `docs/adr/2026-08-03-auth-dropped-tailscale-is-the-only-gate.md`; Tailscale is the only access
   gate, single-user product, nothing else reaches it.
-- Import route(s): upload `collected_pens.csv`/`collected_inks.csv`, parse (creates
+- Import route(s): upload one file at a time (`collected_pens.csv` or `collected_inks.csv`), its
+  content type (pens/inks) indicated explicitly at upload rather than inferred, parse (creates
   `import_attempts`/`import_flagged_items`), review/decide flagged items in the UI, commit —
-  reuses Phase 1's service logic directly, doesn't reimplement it
+  reuses Phase 1's service logic directly, doesn't reimplement it. This is the FPC importer
+  specifically, not a generic one — see
+  `docs/adr/2026-08-08-import-is-fpc-specific-for-now-generic-csv-is-future-state.md` for why, and
+  for the eventual generic-CSV/field-mapping target state that isn't scheduled yet.
 - Same treatment for the color-refresh operation
 - `currently_inked.csv`'s historical inking import stays in Phase 4 (Ledger) — depends on
   `inkings`, which doesn't exist yet regardless of where Import itself lands

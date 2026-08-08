@@ -19,3 +19,10 @@ issue and gets removed from here, not left in both places.
   spec (two pens with an identical bare "M" nib are still two different physical objects), so this
   is a deliberate user choice ("assign this specific loose nib"), never automatic matching. Belongs
   to Phase 3/4's manual nib management.
+
+  **Added 2026-08-08:** a new angle on the same need — Ken wants a more efficient way to enter a
+  whole batch of loose nibs at once, not just one at a time. Genuinely open, not scoped: could be
+  CSV-file-shaped (in which case it'd join the FPC import content-type list alongside pens/inks/
+  inkings — see `docs/adr/2026-08-08-import-is-fpc-specific-for-now-generic-csv-is-future-state.md`)
+  or a dedicated bulk-entry form with no file involved. Whichever it turns out to be, revisit
+  alongside the rest of this item when Phase 3/4's manual nib management gets built.

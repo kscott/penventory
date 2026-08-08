@@ -1,5 +1,6 @@
 import { sql } from 'drizzle-orm';
 import { integer, primaryKey, sqliteTable, text, unique } from 'drizzle-orm/sqlite-core';
+import { IMPORT_CONTENT_TYPE_KEYS } from '../../shared/import-content-types';
 
 // unixepoch(), not CURRENT_TIMESTAMP — CURRENT_TIMESTAMP produces SQLite's
 // human-readable TEXT format ('2026-07-10 21:32:54'), but these columns are
@@ -478,9 +479,17 @@ export const import_runs = sqliteTable('import_runs', {
 export const IMPORT_ATTEMPT_STATUSES = ['open', 'committed'] as const;
 export type ImportAttemptStatus = (typeof IMPORT_ATTEMPT_STATUSES)[number];
 
+// content_type is a fact about the upload event, set once at creation from the same validated
+// value that selects which parser runs (fpc-import.ts) — never inferred from parsed row data
+// afterward, and never updated after creation. See
+// docs/adr/2026-08-08-import-is-fpc-specific-for-now-generic-csv-is-future-state.md. Widened to
+// every IMPORT_CONTENT_TYPE_KEYS value (including 'inkings', not yet parseable) ahead of anything
+// actually writing it — same reasoning as OWNERSHIP_STATES gaining 'empty' ahead of anything
+// setting it, so implementing a new content type later is app logic, not a second migration.
 export const import_attempts = sqliteTable('import_attempts', {
 	id: integer('id').primaryKey({ autoIncrement: true }),
 	operation_type: text('operation_type', { enum: IMPORT_OPERATION_TYPES }).notNull(),
+	content_type: text('content_type', { enum: IMPORT_CONTENT_TYPE_KEYS }).notNull(),
 	status: text('status', { enum: IMPORT_ATTEMPT_STATUSES }).notNull().default('open'),
 	created_at: integer('created_at', { mode: 'timestamp' })
 		.notNull()

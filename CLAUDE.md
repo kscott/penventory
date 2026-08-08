@@ -63,7 +63,9 @@ folder is personal source data, not project documentation.
    would introduce that requirement, the dependency choice is wrong and gets rethought — it does
    not get isolated behind a fake, it does not get included. Single-user doesn't mean less rigor.
 7. Nontrivial changes get run through `/verify` (actually exercising the change end-to-end)
-   before being called done — tests passing isn't sufficient on its own.
+   before being called done — tests passing isn't sufficient on its own. `/verify` checks
+   correctness (did the code do what it was told); it doesn't check fit — see the Development
+   workflow's live-review step below for that.
 
 ## Development workflow
 
@@ -74,11 +76,19 @@ feature branch:
 git checkout -b issue-N         # start
 # work, commit...
                                  # review DoD, pick nits until satisfied
+                                 # for anything user-visible: start the dev server, walk through
+                                 # it live in the browser — Ken confirms the flow/functionality
+                                 # is what he actually wants, not just that tests are green
 gh issue close N                # close BEFORE merging — branch stays live until nothing is left
 git checkout main && git merge issue-N && git branch -d issue-N
 git push origin main
 git push origin --delete issue-N   # once CI is green on main — remote branch too, not just local
 ```
+
+The live-review step is a separate checkpoint from `/verify` above, not a restatement of it —
+`/verify` and the automated test suite check that the code does what it was told; this step is
+where Ken decides whether that's actually the right thing. Skipping it because tests are green is
+exactly the gap it exists to close.
 
 `gh` CLI for all GitHub operations. `git push origin` to push. Once a branch's code is fully
 merged into `main` and CI is confirmed green there, delete both the local **and remote** copies

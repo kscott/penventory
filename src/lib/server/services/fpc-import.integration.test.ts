@@ -194,8 +194,8 @@ describe('fpc-import (parse + commit)', () => {
 	describe('parse', () => {
 		it('writes one import_attempts row and an import_runs audit row', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nullable-fields'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nullable-fields'),
+				contentType: 'pens'
 			});
 
 			const attempt = db
@@ -211,10 +211,47 @@ describe('fpc-import (parse + commit)', () => {
 			expect(runs[0].mode).toBe('dry_run');
 		});
 
+		it('records content_type on the attempt matching what was passed in, and every child row agrees', () => {
+			const { attemptId: pensAttemptId } = parseCatalogImport(db, {
+				csv: fixture('pens', 'nullable-fields'),
+				contentType: 'pens'
+			});
+			const { attemptId: inksAttemptId } = parseCatalogImport(db, {
+				csv: fixture('inks', 'with-line'),
+				contentType: 'inks'
+			});
+
+			const pensAttempt = db
+				.select()
+				.from(import_attempts)
+				.where(eq(import_attempts.id, pensAttemptId))
+				.get();
+			const inksAttempt = db
+				.select()
+				.from(import_attempts)
+				.where(eq(import_attempts.id, inksAttemptId))
+				.get();
+			expect(pensAttempt?.content_type).toBe('pens');
+			expect(inksAttempt?.content_type).toBe('inks');
+
+			for (const item of flaggedItemsFor(pensAttemptId)) {
+				expect((item.row_data as { entityType: string }).entityType).toBe('pen');
+			}
+			for (const item of flaggedItemsFor(inksAttemptId)) {
+				expect((item.row_data as { entityType: string }).entityType).toBe('ink');
+			}
+		});
+
+		it('throws a clear error for a content type with no registered parser — unreachable via the guarded entry points, but honest if that boundary is ever bypassed', () => {
+			expect(() =>
+				parseCatalogImport(db, { csv: fixture('inks', 'empty'), contentType: 'inkings' })
+			).toThrow('no parser registered for content type "inkings"');
+		});
+
 		it('auto-decides a clean row as "import", nothing left to review', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nullable-fields'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nullable-fields'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -225,8 +262,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('flags an exact duplicate found within the same batch', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'exact-duplicate'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'exact-duplicate'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -247,8 +284,8 @@ describe('fpc-import (parse + commit)', () => {
 			});
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'exact-duplicate'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'exact-duplicate'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId).sort((a, b) => a.id - b.id);
@@ -279,8 +316,8 @@ describe('fpc-import (parse + commit)', () => {
 			// penIdentityGroupKey) — Color is the one field that's genuinely
 			// free text and gets fuzzy-compared: "Amber" vs "Ambar".
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'near-duplicate-color-typo'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'near-duplicate-color-typo'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -298,8 +335,8 @@ describe('fpc-import (parse + commit)', () => {
 			// resolution.model is null and brand isn't 'new' with matching
 			// raw text), so no possible_duplicate flag appears at all.
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'near-duplicate-typo'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'near-duplicate-typo'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -310,8 +347,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(brands).values({ name: 'Wavecrest' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'brand-drift'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'brand-drift'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -324,8 +361,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(brands).values({ name: 'Larkspur' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'brand-compound-name-drift'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'brand-compound-name-drift'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -348,8 +385,8 @@ describe('fpc-import (parse + commit)', () => {
 				.run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'brand-alias-zero-overlap'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'brand-alias-zero-overlap'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -364,8 +401,8 @@ describe('fpc-import (parse + commit)', () => {
 				.run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'known-alias'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'known-alias'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -375,8 +412,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('flags an unparseable nib (malformed token, the "sF" case)', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-malformed-token'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-malformed-token'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -390,8 +427,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('flags an unparseable nib (bare custom name, no point size)', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-bare-custom-name-no-point-size'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-bare-custom-name-no-point-size'),
+				contentType: 'pens'
 			});
 
 			expect(flaggedItemsFor(attemptId)[0].flag_type).toBe('unparseable_nib');
@@ -399,8 +436,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('resolves a null line_id cleanly, no flag, when Line is blank', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'blank-line')
+				csv: fixture('inks', 'blank-line'),
+				contentType: 'inks'
 			});
 
 			expect(flaggedItemsFor(attemptId)[0].flag_type).toBeNull();
@@ -408,8 +445,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('resolves a null trim_color_id cleanly, no flag, when Trim Color is blank — real case, no trim hardware', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'blank-trim-color'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'blank-trim-color'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -422,8 +459,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(filling_systems).values({ name: 'Cartridge/Converter' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'filling-system-drift'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'filling-system-drift'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -436,8 +473,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(finishes).values({ name: 'Rhodium' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'trim-color-drift'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'trim-color-drift'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -477,8 +514,8 @@ describe('fpc-import (parse + commit)', () => {
 				.run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nullable-fields'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nullable-fields'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -500,8 +537,8 @@ describe('fpc-import (parse + commit)', () => {
 				.run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'blank-line')
+				csv: fixture('inks', 'blank-line'),
+				contentType: 'inks'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -512,8 +549,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('a flag caused only by an unrecognized nib base_size/purity (no controlled-list field flagged) still requires its own field_decisions entry', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-unrecognized-base-size'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-unrecognized-base-size'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -529,8 +566,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('flags a blank required field (Brand) as unparseable_row, skipping resolution entirely', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'blank-brand'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'blank-brand'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -549,8 +586,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(pen_materials).values({ name: 'Acrylic' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'multi-field-typo'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'multi-field-typo'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -574,8 +611,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(pen_materials).values({ name: 'Acrilic' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'material-drift-brand-resolved'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'material-drift-brand-resolved'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -595,8 +632,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(pen_materials).values({ name: 'Acrylic' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'model-drift-brand-resolved'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'model-drift-brand-resolved'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -614,8 +651,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(lines).values({ brand_id: brand.id, name: 'Woodland' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'line-drift-brand-resolved')
+				csv: fixture('inks', 'line-drift-brand-resolved'),
+				contentType: 'inks'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -654,8 +691,8 @@ describe('fpc-import (parse + commit)', () => {
 				.run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'blank-trim-color'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'blank-trim-color'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -680,8 +717,8 @@ describe('fpc-import (parse + commit)', () => {
 				.run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'blank-line')
+				csv: fixture('inks', 'blank-line'),
+				contentType: 'inks'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -709,8 +746,8 @@ describe('fpc-import (parse + commit)', () => {
 				.run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'with-line')
+				csv: fixture('inks', 'with-line'),
+				contentType: 'inks'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -721,8 +758,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('flags a blank required field (Brand) on an ink row as unparseable_row, skipping resolution entirely', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'blank-brand')
+				csv: fixture('inks', 'blank-brand'),
+				contentType: 'inks'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -736,8 +773,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('flags a Type value outside the fixed bottle/sample/cartridge set as unparseable_row — a closed enum, not a reviewable field', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'invalid-type')
+				csv: fixture('inks', 'invalid-type'),
+				contentType: 'inks'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -750,8 +787,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('tracks the source CSV line number on every row, 1-indexed including the header', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'exact-duplicate'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'exact-duplicate'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId).sort((a, b) => a.id - b.id);
@@ -763,8 +800,8 @@ describe('fpc-import (parse + commit)', () => {
 	describe('reevaluateFlaggedItem', () => {
 		it('an edit that resolves an ink possible_duplicate clears the flag and auto-decides import, same as a never-flagged row', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'exact-duplicate')
+				csv: fixture('inks', 'exact-duplicate'),
+				contentType: 'inks'
 			});
 			const items = flaggedItemsFor(attemptId).sort((a, b) => a.id - b.id);
 			expect(items[1].flag_type).toBe('possible_duplicate');
@@ -780,8 +817,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an edit that resolves a pen possible_duplicate clears the flag, checking siblings from the same attempt not just the real catalog', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'exact-duplicate'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'exact-duplicate'),
+				contentType: 'pens'
 			});
 			const items = flaggedItemsFor(attemptId).sort((a, b) => a.id - b.id);
 			expect(items[1].flag_type).toBe('possible_duplicate');
@@ -795,8 +832,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('clearing a pen required field (Brand) leaves it unparseable_row, same as the ink case', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'exact-duplicate'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'exact-duplicate'),
+				contentType: 'pens'
 			});
 			const items = flaggedItemsFor(attemptId).sort((a, b) => a.id - b.id);
 
@@ -814,8 +851,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(brands).values({ name: 'Wavecrest' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'exact-duplicate')
+				csv: fixture('inks', 'exact-duplicate'),
+				contentType: 'inks'
 			});
 			const items = flaggedItemsFor(attemptId).sort((a, b) => a.id - b.id);
 
@@ -836,8 +873,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an edit that fills a blank required field resolves an unparseable_row into a clean, auto-decided row', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'blank-brand')
+				csv: fixture('inks', 'blank-brand'),
+				contentType: 'inks'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			expect(item.flag_type).toBe('unparseable_row');
@@ -852,8 +889,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an edit that clears the required field again still leaves it unparseable_row, not silently accepted', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'blank-brand')
+				csv: fixture('inks', 'blank-brand'),
+				contentType: 'inks'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 
@@ -868,8 +905,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('clearing a previously-populated optional field (Line) is honored, not just filling blanks', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'with-line')
+				csv: fixture('inks', 'with-line'),
+				contentType: 'inks'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			expect(rawOf(item).Line).not.toBe('');
@@ -883,8 +920,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('re-evaluating does not disturb other items in the same attempt', () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'exact-duplicate')
+				csv: fixture('inks', 'exact-duplicate'),
+				contentType: 'inks'
 			});
 			const items = flaggedItemsFor(attemptId).sort((a, b) => a.id - b.id);
 			const firstItemBefore = items[0];
@@ -900,8 +937,8 @@ describe('fpc-import (parse + commit)', () => {
 	describe('commit', () => {
 		it('refuses when any flagged item still has decision = null', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'exact-duplicate'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'exact-duplicate'),
+				contentType: 'pens'
 			});
 
 			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
@@ -909,10 +946,10 @@ describe('fpc-import (parse + commit)', () => {
 			);
 		});
 
-		it('refuses an attempt with zero rows — both CSVs empty', async () => {
+		it('refuses an attempt with zero rows — an empty CSV', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'empty'),
+				contentType: 'pens'
 			});
 
 			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
@@ -928,8 +965,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('takes a real backup before writing anything', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nullable-fields'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nullable-fields'),
+				contentType: 'pens'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -940,8 +977,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('commits a nib with an unrecognized base_size — creates the missing lookup row rather than crashing', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-unrecognized-base-size'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-unrecognized-base-size'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			decideField(item.id, 'nib_base_size', 'import');
@@ -960,8 +997,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('commits an archived pen as ownership_state = retired, with ownership_changed_on set', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'archived-retired-with-date'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'archived-retired-with-date'),
+				contentType: 'pens'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -973,8 +1010,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('commits an archived pen with no Archived On date as ownership_changed_on = null, not a crash', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'archived-retired-no-date'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'archived-retired-no-date'),
+				contentType: 'pens'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -986,8 +1023,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('commits an ink with a populated Maker, resolving maker_id separately from brand_id', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'with-maker')
+				csv: fixture('inks', 'with-maker'),
+				contentType: 'inks'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1005,8 +1042,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('commits a clean pen with a bare-point-size nib — Steel/#6/Round defaults, size_category/condition null', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-bare-point-size'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-bare-point-size'),
+				contentType: 'pens'
 			});
 
 			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1042,8 +1079,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(brands).values({ name: 'Quietbrook' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nullable-fields'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nullable-fields'),
+				contentType: 'pens'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1054,8 +1091,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('commits a blank Nib as a pen with no linked nib at all', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-blank'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-blank'),
+				contentType: 'pens'
 			});
 
 			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1070,8 +1107,8 @@ describe('fpc-import (parse + commit)', () => {
 			// (see nib-parser's tests). Titanium/Cursive Smooth Italic are
 			// pre-seeded by migration now — no manual insert needed.
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-full-compound'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-full-compound'),
+				contentType: 'pens'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1096,8 +1133,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('commits a nib with an explicit purity token, resolving purity_id', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-with-purity'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-with-purity'),
+				contentType: 'pens'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1108,8 +1145,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('commits a custom grind name into nibs.custom_name and sets is_custom_grind', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-custom-grind-name'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-custom-grind-name'),
+				contentType: 'pens'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1122,8 +1159,8 @@ describe('fpc-import (parse + commit)', () => {
 		it('commits a finish (plating color) extracted from the Nib text, separate from material', async () => {
 			// Rose Gold is pre-seeded by migration now — no manual insert needed.
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'finish-as-plating-color'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'finish-as-plating-color'),
+				contentType: 'pens'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1134,8 +1171,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('commits a maker-proprietary point size ("Zoom") with its own brand_id/manufacturer_id and implied shape, independent of the pen\'s own brand', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-maker-brand'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-maker-brand'),
+				contentType: 'pens'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1171,8 +1208,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an unparseable_nib corrected to a maker-proprietary point size resolves brand_id/manufacturer_id through the re-resolution path too', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-malformed-token'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-malformed-token'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Nib', 'Signature 14K');
@@ -1207,8 +1244,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(brands).values({ name: 'Piolt' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-malformed-token'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-malformed-token'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Nib', 'Signature 14K');
@@ -1243,8 +1280,8 @@ describe('fpc-import (parse + commit)', () => {
 			const existingBrand = db.insert(brands).values({ name: 'Piolt' }).returning().get();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-malformed-token'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-malformed-token'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Nib', 'Signature 14K');
@@ -1277,8 +1314,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('commits a nibmeister grind ("M Journaler") with nibmeister_id set — a real field, never populated by import before now', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-nibmeister-grind'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-nibmeister-grind'),
+				contentType: 'pens'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1295,8 +1332,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('commits "Flex" as its own point size with is_flex set — Noodler\'s factory name that also describes real behavior', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-flex'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-flex'),
+				contentType: 'pens'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1311,8 +1348,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an unparseable_nib corrected to a nibmeister grind resolves nibmeister_id through the re-resolution path too', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-malformed-token'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-malformed-token'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Nib', 'M Imperial');
@@ -1336,8 +1373,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(vendors).values({ name: 'Gena Salorno' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-malformed-token'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-malformed-token'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Nib', 'M Journaler');
@@ -1358,8 +1395,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an unparseable_nib row can be skipped, committing the pen without a nib', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-malformed-token'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-malformed-token'),
+				contentType: 'pens'
 			});
 			decideAllClean(attemptId, 'skip');
 
@@ -1394,8 +1431,8 @@ describe('fpc-import (parse + commit)', () => {
 			});
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'brand-drift'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'brand-drift'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			expect(item.flag_type).toBe('needs_confirmation');
@@ -1434,8 +1471,8 @@ describe('fpc-import (parse + commit)', () => {
 				.run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'brand-drift')
+				csv: fixture('inks', 'brand-drift'),
+				contentType: 'inks'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			expect(item.flag_type).toBe('needs_confirmation');
@@ -1473,8 +1510,8 @@ describe('fpc-import (parse + commit)', () => {
 			});
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-malformed-token'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-malformed-token'),
+				contentType: 'pens'
 			});
 			expect(flaggedItemsFor(attemptId)[0].flag_type).toBe('possible_duplicate');
 			decideRow(flaggedItemsFor(attemptId)[0].id, 'import');
@@ -1500,8 +1537,8 @@ describe('fpc-import (parse + commit)', () => {
 			});
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-malformed-token'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-malformed-token'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Nib', 'F');
@@ -1515,8 +1552,8 @@ describe('fpc-import (parse + commit)', () => {
 		it('a needs_confirmation flag on brand can be resolved via merge_into, reusing the existing id', async () => {
 			const existingBrand = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'brand-drift'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'brand-drift'),
+				contentType: 'pens'
 			});
 
 			const item = flaggedItemsFor(attemptId)[0];
@@ -1532,8 +1569,8 @@ describe('fpc-import (parse + commit)', () => {
 		it('a compound-name brand flag ("Pilot Namiki" shape) resolves end-to-end via merge_into, no duplicate brand created', async () => {
 			const existingBrand = db.insert(brands).values({ name: 'Larkspur' }).returning().get();
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'brand-compound-name-drift'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'brand-compound-name-drift'),
+				contentType: 'pens'
 			});
 
 			const item = flaggedItemsFor(attemptId)[0];
@@ -1549,8 +1586,8 @@ describe('fpc-import (parse + commit)', () => {
 		it('a compound-name brand flag ("Pilot Namiki" shape) resolves end-to-end via alias_to, recording the alias and no duplicate', async () => {
 			const existingBrand = db.insert(brands).values({ name: 'Larkspur' }).returning().get();
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'brand-compound-name-drift'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'brand-compound-name-drift'),
+				contentType: 'pens'
 			});
 
 			const item = flaggedItemsFor(attemptId)[0];
@@ -1579,8 +1616,8 @@ describe('fpc-import (parse + commit)', () => {
 		it('a compound-name brand flag ("Pilot Namiki" shape) resolved via import is REFUSED — word-containment can never create a separate brand', async () => {
 			db.insert(brands).values({ name: 'Larkspur' }).run();
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'brand-compound-name-drift'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'brand-compound-name-drift'),
+				contentType: 'pens'
 			});
 
 			const item = flaggedItemsFor(attemptId)[0];
@@ -1598,8 +1635,8 @@ describe('fpc-import (parse + commit)', () => {
 		it('by contrast, a character-typo-only brand flag ("Wavecrest"/"Wavecrst" shape) resolved via import IS allowed — creates a genuinely separate brand', async () => {
 			db.insert(brands).values({ name: 'Wavecrest' }).run();
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'brand-drift'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'brand-drift'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			decideField(item.id, 'brand', 'import');
@@ -1615,8 +1652,8 @@ describe('fpc-import (parse + commit)', () => {
 		it('a needs_confirmation flag on brand can be resolved via alias_to, recording the alias for next time', async () => {
 			const existingBrand = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'brand-drift'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'brand-drift'),
+				contentType: 'pens'
 			});
 
 			const item = flaggedItemsFor(attemptId)[0];
@@ -1648,8 +1685,8 @@ describe('fpc-import (parse + commit)', () => {
 			// can appear on more than one row in a real export.
 			const existingBrand = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'two-rows-same-brand-typo'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'two-rows-same-brand-typo'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -1678,8 +1715,8 @@ describe('fpc-import (parse + commit)', () => {
 			const brandA = db.insert(brands).values({ name: 'Wavecrest' }).returning().get();
 			const brandB = db.insert(brands).values({ name: 'Fernhollow' }).returning().get();
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'two-rows-same-brand-typo'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'two-rows-same-brand-typo'),
+				contentType: 'pens'
 			});
 
 			const items = flaggedItemsFor(attemptId);
@@ -1697,8 +1734,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(models).values({ brand_id: brand.id, name: 'Vantage' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'model-drift-after-brand-resolved'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'model-drift-after-brand-resolved'),
+				contentType: 'pens'
 			});
 
 			const item = flaggedItemsFor(attemptId)[0];
@@ -1733,8 +1770,8 @@ describe('fpc-import (parse + commit)', () => {
 				.get();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'model-drift-after-brand-resolved'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'model-drift-after-brand-resolved'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			decideField(item.id, 'brand', 'merge_into', brand.id);
@@ -1763,8 +1800,8 @@ describe('fpc-import (parse + commit)', () => {
 				.get();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'line-drift-after-brand-resolved')
+				csv: fixture('inks', 'line-drift-after-brand-resolved'),
+				contentType: 'inks'
 			});
 
 			const item = flaggedItemsFor(attemptId)[0];
@@ -1797,8 +1834,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(brands).values({ name: 'Thistlebrook' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'with-line')
+				csv: fixture('inks', 'with-line'),
+				contentType: 'inks'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1815,8 +1852,8 @@ describe('fpc-import (parse + commit)', () => {
 			// parseCatalogImport's ink loop: line stays null when brand isn't
 			// 'resolved' yet).
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'with-line')
+				csv: fixture('inks', 'with-line'),
+				contentType: 'inks'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1828,8 +1865,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('commits an ink with a null line_id when Line is blank', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'blank-line')
+				csv: fixture('inks', 'blank-line'),
+				contentType: 'inks'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1840,8 +1877,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('commits an archived ink as ownership_state = rehomed, with ownership_changed_on set', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'archived-rehomed')
+				csv: fixture('inks', 'archived-rehomed'),
+				contentType: 'inks'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1853,8 +1890,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('commits an archived ink with no Archived On date as ownership_changed_on = null, not a crash', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'archived-rehomed-no-date')
+				csv: fixture('inks', 'archived-rehomed-no-date'),
+				contentType: 'inks'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1866,8 +1903,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('joins Comment and Private Comment into notes when both are present', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'comment-and-private-comment')
+				csv: fixture('inks', 'comment-and-private-comment'),
+				contentType: 'inks'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1878,8 +1915,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('imports only the allow-listed status tag (reserved), dropping the color-descriptor tag alongside it (dark gold)', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'tags-plain')
+				csv: fixture('inks', 'tags-plain'),
+				contentType: 'inks'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1898,8 +1935,8 @@ describe('fpc-import (parse + commit)', () => {
 			const existing = db.insert(tags).values({ name: 'reserved' }).returning().get();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'tags-plain')
+				csv: fixture('inks', 'tags-plain'),
+				contentType: 'inks'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1911,8 +1948,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('imports the "purgatory" status tag — "may want to rehome, haven\'t decided"', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'tags-purgatory')
+				csv: fixture('inks', 'tags-purgatory'),
+				contentType: 'inks'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1923,8 +1960,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('a "gifted" tag becomes the rehomed reason in notes, not a tags row — and the non-allow-listed tag alongside it (ocean blue) is dropped', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'tags-gifted')
+				csv: fixture('inks', 'tags-gifted'),
+				contentType: 'inks'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1937,8 +1974,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('a "sold" tag becomes the rehomed reason in notes, not a tags row', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'tags-sold')
+				csv: fixture('inks', 'tags-sold'),
+				contentType: 'inks'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1951,8 +1988,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('writes an import_runs commit row alongside the parse row', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nullable-fields'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nullable-fields'),
+				contentType: 'pens'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -1964,8 +2001,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an unparseable_row can be skipped outright — nothing created, no correction attempted', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'blank-brand'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'blank-brand'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			decideRow(item.id, 'skip');
@@ -1978,8 +2015,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an unparseable_row decided "import" without correction refuses again — still missing the same field', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'blank-brand'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'blank-brand'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			decideRow(item.id, 'import');
@@ -1992,8 +2029,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an unparseable_row, corrected via row_data.raw and decided "import", resolves and commits cleanly', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'blank-brand'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'blank-brand'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Brand', 'Fernhollow');
@@ -2030,8 +2067,8 @@ describe('fpc-import (parse + commit)', () => {
 			});
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'blank-brand'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'blank-brand'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Brand', 'Fernhollow');
@@ -2063,8 +2100,8 @@ describe('fpc-import (parse + commit)', () => {
 			});
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'blank-brand'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'blank-brand'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Brand', 'Fernhollow');
@@ -2085,8 +2122,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(brands).values({ name: 'Wavecrest' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'blank-brand'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'blank-brand'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Brand', 'Wavecrst'); // typo of the seeded brand
@@ -2106,8 +2143,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an unparseable_nib, corrected via row_data.raw.Nib and decided "import", resolves and commits cleanly', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-malformed-token'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-malformed-token'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Nib', 'M');
@@ -2120,8 +2157,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an unparseable_nib decided "import" without correction refuses again — Nib is still unparseable', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-malformed-token'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-malformed-token'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			decideRow(item.id, 'import');
@@ -2141,8 +2178,8 @@ describe('fpc-import (parse + commit)', () => {
 				.get();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'multi-field-typo'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'multi-field-typo'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			decideField(item.id, 'brand', 'merge_into', existingBrand.id);
@@ -2168,8 +2205,8 @@ describe('fpc-import (parse + commit)', () => {
 			const existingFinish = db.insert(finishes).values({ name: 'Rhodium' }).returning().get();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'three-field-typo'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'three-field-typo'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			const candidateInfo = item.candidate_info as { fields: Record<string, unknown> };
@@ -2217,8 +2254,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(finishes).values({ name: 'Rhodium' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'three-field-typo'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'three-field-typo'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			decideField(item.id, 'brand', 'merge_into', existingBrand.id);
@@ -2246,8 +2283,8 @@ describe('fpc-import (parse + commit)', () => {
 		it('a needs_confirmation row that was never decided at all (field_decisions never touched) refuses to commit', async () => {
 			db.insert(brands).values({ name: 'Wavecrest' }).run();
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'brand-drift'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'brand-drift'),
+				contentType: 'pens'
 			});
 
 			await expect(commitImportAttempt(db, sqlite, attemptId, backupDir)).rejects.toThrow(
@@ -2258,8 +2295,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an unrecognized nib base_size decided with anything other than "import" still refuses — there is no candidate to merge/alias into', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-unrecognized-base-size'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-unrecognized-base-size'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			decideField(item.id, 'nib_base_size', 'merge_into', 999999);
@@ -2278,8 +2315,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an unparseable_row decided with anything other than import/skip refuses defensively', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'blank-brand'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'blank-brand'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			decideRow(item.id, 'merge_into');
@@ -2291,8 +2328,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an unparseable_nib decided with anything other than import/skip refuses defensively', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-malformed-token'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-malformed-token'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			decideRow(item.id, 'merge_into');
@@ -2304,8 +2341,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an ink unparseable_row decided "import" without correction refuses again — still missing the same field', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'blank-brand')
+				csv: fixture('inks', 'blank-brand'),
+				contentType: 'inks'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			decideRow(item.id, 'import');
@@ -2318,8 +2355,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an ink unparseable_row, corrected via row_data.raw and decided "import", resolves and commits cleanly', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'blank-brand')
+				csv: fixture('inks', 'blank-brand'),
+				contentType: 'inks'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Brand', 'Fernhollow');
@@ -2339,8 +2376,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an ink unparseable_row from an invalid Type, corrected to a valid one, resolves and commits cleanly', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'invalid-type')
+				csv: fixture('inks', 'invalid-type'),
+				contentType: 'inks'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Type', 'bottle');
@@ -2353,8 +2390,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('an ink unparseable_row corrected to a Type that is still invalid refuses again rather than committing garbage', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'invalid-type')
+				csv: fixture('inks', 'invalid-type'),
+				contentType: 'inks'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Type', 'vial');
@@ -2370,8 +2407,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(brands).values({ name: 'Wavecrest' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'empty'),
-				inksCSV: fixture('inks', 'blank-brand')
+				csv: fixture('inks', 'blank-brand'),
+				contentType: 'inks'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Brand', 'Wavecrst'); // typo of the seeded brand
@@ -2391,8 +2428,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('correcting Nib to blank means "no nib after all" — commits the pen with no nib, not a re-thrown error', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-malformed-token'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-malformed-token'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Nib', '');
@@ -2408,8 +2445,8 @@ describe('fpc-import (parse + commit)', () => {
 			// Rose Gold is pre-seeded by migration now — no manual insert
 			// needed.
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-malformed-token'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-malformed-token'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Nib', 'F Rose Gold');
@@ -2433,8 +2470,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(nib_materials).values({ name: 'Steal' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-malformed-token'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-malformed-token'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			correctRawField(item.id, 'Nib', 'M');
@@ -2453,8 +2490,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('commits a pen with a blank Trim Color as trim_color_id = null — real case, no trim hardware', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'blank-trim-color'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'blank-trim-color'),
+				contentType: 'pens'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -2470,8 +2507,8 @@ describe('fpc-import (parse + commit)', () => {
 				.returning()
 				.get();
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'filling-system-drift'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'filling-system-drift'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			decideField(item.id, 'filling_system', 'merge_into', existing.id);
@@ -2486,8 +2523,8 @@ describe('fpc-import (parse + commit)', () => {
 		it('resolves Trim Color drift via merge_into, end-to-end through the full pipeline', async () => {
 			const existing = db.insert(finishes).values({ name: 'Rhodium' }).returning().get();
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'trim-color-drift'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'trim-color-drift'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			decideField(item.id, 'trim_color', 'merge_into', existing.id);
@@ -2514,8 +2551,8 @@ describe('fpc-import (parse + commit)', () => {
 			// "Silver Tone" (see the vocabulary-seeding ADR) — that's the tone,
 			// not a claim the trim is literally silver metal.
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'finish-as-plating-color'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'finish-as-plating-color'),
+				contentType: 'pens'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -2530,8 +2567,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('a populated Price with real currency-noise formatting ($/EUR) is safely ignored — commits cleanly', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'price-populated'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'price-populated'),
+				contentType: 'pens'
 			});
 
 			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -2540,8 +2577,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('populated ledger columns (Usage, Last Inked, etc.) are safely ignored — commits cleanly, nothing derived from them', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'ledger-columns-populated'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'ledger-columns-populated'),
+				contentType: 'pens'
 			});
 
 			const result = await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -2550,8 +2587,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('every directly-copied/computed scalar pen field round-trips exactly: color, notes, ownership_state, created_at vs updated_at', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nullable-fields'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nullable-fields'),
+				contentType: 'pens'
 			});
 
 			const before = new Date();
@@ -2574,8 +2611,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('a blank Comment leaves pens.notes null, not an empty string', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'nib-bare-point-size'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'nib-bare-point-size'),
+				contentType: 'pens'
 			});
 
 			await commitImportAttempt(db, sqlite, attemptId, backupDir);
@@ -2586,8 +2623,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('two rows in the same batch introducing the same brand-new brand create only one brand row, both pens reference it', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'two-rows-same-new-brand'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'two-rows-same-new-brand'),
+				contentType: 'pens'
 			});
 			decideAllClean(attemptId, 'import');
 
@@ -2610,8 +2647,8 @@ describe('fpc-import (parse + commit)', () => {
 				.get();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'model-exact-match-after-brand-resolved'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'model-exact-match-after-brand-resolved'),
+				contentType: 'pens'
 			});
 			const item = flaggedItemsFor(attemptId)[0];
 			decideField(item.id, 'brand', 'merge_into', brand.id);
@@ -2634,8 +2671,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(models).values({ brand_id: thistlebrook.id, name: 'Journeyman' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'model-cross-brand-scoping'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'model-cross-brand-scoping'),
+				contentType: 'pens'
 			});
 
 			// Brand resolves exactly at parse (Fernhollow pre-seeded), so model
@@ -2656,8 +2693,8 @@ describe('fpc-import (parse + commit)', () => {
 		// exercised). No brand seeded here at all.
 		it('resolves a model at commit time when its brand was itself new at parse — not just when the brand was flagged', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'model-at-commit-when-brand-new'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'model-at-commit-when-brand-new'),
+				contentType: 'pens'
 			});
 			decideAllClean(attemptId, 'import');
 
@@ -2683,8 +2720,8 @@ describe('fpc-import (parse + commit)', () => {
 			// needs_confirmation for 'model' instead of silently creating a
 			// second, near-duplicate model under the same brand.
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'near-duplicate-typo'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'near-duplicate-typo'),
+				contentType: 'pens'
 			});
 			decideAllClean(attemptId, 'import');
 
@@ -2705,8 +2742,8 @@ describe('fpc-import (parse + commit)', () => {
 
 		it('two rows sharing the same new brand AND the same new model create exactly one of each, both pens referencing them — not two competing model rows', async () => {
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'two-rows-same-new-brand-same-model'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'two-rows-same-new-brand-same-model'),
+				contentType: 'pens'
 			});
 			decideAllClean(attemptId, 'import');
 
@@ -2727,8 +2764,8 @@ describe('fpc-import (parse + commit)', () => {
 			db.insert(models).values({ brand_id: thistlebrook.id, name: 'Journeyman' }).run();
 
 			const { attemptId } = parseCatalogImport(db, {
-				pensCSV: fixture('pens', 'model-cross-brand-scoping-brand-deferred'),
-				inksCSV: fixture('inks', 'empty')
+				csv: fixture('pens', 'model-cross-brand-scoping-brand-deferred'),
+				contentType: 'pens'
 			});
 			decideAllClean(attemptId, 'import');
 

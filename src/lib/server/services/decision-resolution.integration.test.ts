@@ -61,7 +61,7 @@ describe('applyDecision / settleField — decision permutation matrix', () => {
 	}) {
 		const attempt = db
 			.insert(import_attempts)
-			.values({ operation_type: 'catalog_import' })
+			.values({ operation_type: 'catalog_import', content_type: 'pens' })
 			.returning()
 			.get();
 		return db

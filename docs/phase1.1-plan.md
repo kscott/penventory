@@ -3,7 +3,10 @@
 Inserted between Phase 1 and Phase 2, not appended as Phase 7 or squeezed into Phase 2/3 —
 see `docs/adr/2026-07-09-import-gets-own-phase-1-1.md` and
 `docs/adr/2026-07-09-no-cli-at-all-for-import.md` for why. Short version: the FPC import isn't actually
-*done*, in any usable sense, until it's a real web feature. Phase 1 builds the
+*done*, in any usable sense, until it's a real web feature. This phase builds the FPC importer
+specifically — not a generic one; see
+`docs/adr/2026-08-08-import-is-fpc-specific-for-now-generic-csv-is-future-state.md` for why that's a
+deliberate, bounded choice and what the eventual generic-CSV/field-mapping state looks like. Phase 1 builds the
 underlying parsing/`resolveOrFlag`/duplicate-detection **service logic** and proves it out with
 direct unit/integration tests — no CLI at all, not even for local testing (same pattern every
 other service in this codebase already uses). This phase is what actually makes real-data import
@@ -34,13 +37,60 @@ issue/branch, closed before merge.
    *Gate:* an e2e-level test for the client module's actual construction path against a real file
    path, proving the env-var-to-connection wiring itself.
 
-2. **Import routes: upload + parse.** Accepts the two CSVs (`collected_pens.csv`,
-   `collected_inks.csv`) via a route, invokes Phase 1's service logic directly (no
-   reimplementation — the same parsing/`resolveOrFlag`/duplicate-detection functions Phase 1's
-   tests already exercise directly), which creates the `import_attempts` + `import_flagged_items`
-   rows exactly as Phase 1 designed them. Returns the new attempt's id/state to the UI.
-   *Gate:* contract test for the upload/parse endpoint against fixture CSVs (same fixtures Phase
-   1's unit tests use).
+2. **Import routes: upload + parse, plus the upload screen itself.** Accepts **one** CSV per
+   upload — `collected_pens.csv` or `collected_inks.csv`, never both required together — with its
+   content type indicated explicitly by whoever's uploading, not inferred from the file's header.
+   See `docs/adr/2026-08-08-import-is-fpc-specific-for-now-generic-csv-is-future-state.md`:
+   explicit indication over sniffing is deliberate, both cheaper now and the right interaction
+   shape once generic import exists later. Invokes Phase 1's service logic directly (no
+   reimplementation), which creates the `import_attempts` + `import_flagged_items` rows exactly as
+   Phase 1 designed them, scoped to that one entity type. Pens and inks are fully independent from
+   here on — uploading one never requires or implies the other; each is its own attempt, worked
+   through and committed on its own schedule. Worked out with Ken 2026-08-08 after review of the
+   first cut of this UI surfaced the original two-file-required design as wrong.
+
+   **Content-type registry**, `src/lib/shared/import-content-types.ts` — first file in
+   `lib/shared/`: `IMPORT_CONTENT_TYPES` (`pens`/`inks` active, `inkings` — `currently_inked.csv`,
+   Phase 4 — `coming_soon`; `nibs` deliberately excluded, see `docs/punch-list.md`'s loose-nib
+   entry, its mechanism isn't decided), a flat `ImportContentType` key type (no separate
+   compile-time "active" subtype — the `isActiveImportContentType` guard is the one place that
+   decides what's usable right now, checked at the real boundary of a raw form string).
+
+   **`import_attempts.content_type`** — new `NOT NULL` column, same enum-notation/no-DB-enforcement
+   caveat as every other enum column in `schema.ts`. Set once, at creation, from the same validated
+   value that also selects which parser runs; never inferred from parsed row data afterward (an
+   attempt with zero parseable rows has nothing to infer from, and it gets the causality
+   backwards — content type is a fact about the upload event, not a derived effect of parsing it).
+   Never updated after creation.
+
+   **`parseCatalogImport`** takes `{ csv, contentType }`, dispatching to
+   `parsePensIntoAttempt`/`parseInksIntoAttempt` via a `CONTENT_PARSERS` lookup (only entries for
+   what's implemented — a miss throws a clear error rather than being statically hidden).
+
+   **One open attempt per content type, not per attempt overall.** Any number of *different*-type
+   attempts can be open at once (pens and inks are fully independent domains), but duplicate
+   detection only ever checks the real catalog and rows within the *same* attempt — never across
+   two separate open attempts of the same type — so two simultaneous pens attempts could each
+   introduce the same new pen and neither would catch it. `findOpenAttemptForContentType` backs
+   this both in the upload UI (never offer starting a second one) and defensively in the upload
+   action itself.
+
+   **The upload screen**, on `/import` itself (not a separate route) — one row per registry entry,
+   not a `<select>` (a disabled option can't carry a live link to the attempt it's blocking on):
+   available (file input, submit), already-open (no file input, direct link into the existing
+   attempt instead — never let Ken pick a file only to have it silently redirected away from),
+   coming-soon (inert). Landed as a starting point to refine once it's an actual screen to react
+   to, not settled further in the abstract — see the open question below.
+
+   *Open, not yet resolved:* an already-open row here links to an attempt that's also sitting in
+   the existing open-attempts list on the same page — overlapping information, two lists. Resolve
+   during live review once it's on screen, not before.
+
+   *Gate:* contract test for the upload/parse endpoint against fixture CSVs, covering both content
+   types plus a rejected/unrecognized one; integration test asserting the `content_type` invariant
+   directly (matches the value passed in, matches every child row's `row_data.entityType`);
+   Playwright tests for the upload screen's three states, a successful upload landing on the new
+   attempt's review page, and a second upload of an already-open type being refused.
 
 3. **Review/decide UI.** Renders an attempt's `import_flagged_items` and lets Ken record a
    decision on each directly in the browser, written straight to that item's row the moment it's
@@ -80,8 +130,11 @@ issue/branch, closed before merge.
        `catalog_import` — step 5's color-refresh attempts belong here too), linking into each
        attempt's review page. Added 2026-08-04: Ken flagged that an attempt has no way to be found
        again without remembering its URL/id by hand, and separately wants multiple files staged up
-       for processing at once (color-refresh especially). Deliberately minimal — no pagination,
-       filtering, or sorting; a single-user tool won't realistically need them yet.
+       for processing at once — originally raised about color-refresh specifically, but pens/inks
+       being fully independent uploads (2026-08-08, see step 2) makes it the normal case for
+       catalog import too: a pens attempt and an inks attempt can sit open side by side, reviewed
+       on separate schedules. Deliberately minimal — no pagination, filtering, or sorting; a
+       single-user tool won't realistically need them yet.
 
        *Gate:* unit/integration tests for the re-evaluation function directly (edit clears a
        duplicate match; edit turns a duplicate into a different flag type; edit fills a blank

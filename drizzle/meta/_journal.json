@@ -85,6 +85,13 @@
       "when": 1783989395745,
       "tag": "0011_seed_flex_seagull_long_knife",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1786221703501,
+      "tag": "0012_magical_johnny_blaze",
+      "breakpoints": true
     }
   ]
 }

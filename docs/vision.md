@@ -625,6 +625,10 @@ whether the time is justified up front.
   structure.
 - **FPC import kickstarts the inventory**, with backfill after — bring in what FPC already has,
   then go back and fill in the gaps FPC never captured (nib detail, purchase structure, etc.).
+  Import itself is built FPC-specific for now — a generic CSV importer (arbitrary file, user maps
+  its columns onto Penventory's required/optional fields) is real eventual product direction, not
+  scope creep, but deferred until a second real data source exists to design it against. See
+  `docs/adr/2026-08-08-import-is-fpc-specific-for-now-generic-csv-is-future-state.md`.
 - **Real success is motivation, not just data migration.** Getting the import and backfill done
   is one bar; actually staying motivated enough to log ledger entries — evaluations as pens/inks/
   nibs get used, not just static catalog rows — is the bar that actually matters. The ledger

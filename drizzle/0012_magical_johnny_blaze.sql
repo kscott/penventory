@@ -1,0 +1,1 @@
+ALTER TABLE `import_attempts` ADD `content_type` text NOT NULL;

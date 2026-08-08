@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 import { parse } from 'csv-parse/sync';
 import { and, eq, ne } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
+import type { ImportContentType } from '../../shared/import-content-types';
 import { backupDatabase } from '../backup';
 import { create } from '../db/repository';
 import { resolveOrFlag, type ResolveResult } from '../db/resolve-or-flag';
@@ -577,25 +578,14 @@ function writeFlaggedItem(db: Db, attemptId: number, rowData: RowData, flag: Fla
 }
 
 // --- Parse -------------------------------------------------------------------
+// One content type per attempt, chosen explicitly by whoever's uploading — see
+// docs/adr/2026-08-08-import-is-fpc-specific-for-now-generic-csv-is-future-state.md. Each
+// parse*IntoAttempt function is the exact loop body parseCatalogImport used to run inline for its
+// half of a two-file upload; only the dispatch changed, not the per-row logic.
 
-export function parseCatalogImport(
-	db: Db,
-	{ pensCSV, inksCSV }: { pensCSV: string; inksCSV: string }
-): { attemptId: number } {
-	const attempt = db
-		.insert(import_attempts)
-		.values({ operation_type: 'catalog_import' })
-		.returning()
-		.get();
-
-	const pensRaw = parse(pensCSV, CSV_OPTIONS) as RawCsvRow[];
-	const inksRaw = parse(inksCSV, CSV_OPTIONS) as RawCsvRow[];
-
+function parsePensIntoAttempt(db: Db, attemptId: number, pensRaw: RawCsvRow[]): number {
 	const existingPenIdentities = loadExistingPenIdentities(db);
-	const existingInkIdentities = loadExistingInkIdentities(db);
 	const batchPenIdentities: IdentityCandidate[] = [];
-	const batchInkIdentities: IdentityCandidate[] = [];
-
 	let flaggedCount = 0;
 
 	for (const [index, raw] of pensRaw.entries()) {
@@ -610,7 +600,7 @@ export function parseCatalogImport(
 				sourceLine,
 				missingFields
 			};
-			writeFlaggedItem(db, attempt.id, rowData, {
+			writeFlaggedItem(db, attemptId, rowData, {
 				flagType: 'unparseable_row',
 				candidateInfo: { missingFields }
 			});
@@ -642,9 +632,17 @@ export function parseCatalogImport(
 		const rowData = buildPenRowData(raw, sourceLine, resolution);
 		const flaggedFields = fieldsNeedingConfirmation(penFlaggableResolutions(resolution));
 		const flag = determineFlag(dupMatches, resolution.nib, flaggedFields);
-		writeFlaggedItem(db, attempt.id, rowData, flag);
+		writeFlaggedItem(db, attemptId, rowData, flag);
 		if (flag) flaggedCount++;
 	}
+
+	return flaggedCount;
+}
+
+function parseInksIntoAttempt(db: Db, attemptId: number, inksRaw: RawCsvRow[]): number {
+	const existingInkIdentities = loadExistingInkIdentities(db);
+	const batchInkIdentities: IdentityCandidate[] = [];
+	let flaggedCount = 0;
 
 	for (const [index, raw] of inksRaw.entries()) {
 		const sourceLine = index + 2;
@@ -658,7 +656,7 @@ export function parseCatalogImport(
 				sourceLine,
 				missingFields: problems
 			};
-			writeFlaggedItem(db, attempt.id, rowData, {
+			writeFlaggedItem(db, attemptId, rowData, {
 				flagType: 'unparseable_row',
 				candidateInfo: { missingFields: problems }
 			});
@@ -682,20 +680,47 @@ export function parseCatalogImport(
 		const rowData = buildInkRowData(raw, sourceLine, resolution);
 		const flaggedFields = fieldsNeedingConfirmation(inkFlaggableResolutions(resolution));
 		const flag = determineFlag(dupMatches, null, flaggedFields);
-		writeFlaggedItem(db, attempt.id, rowData, flag);
+		writeFlaggedItem(db, attemptId, rowData, flag);
 		if (flag) flaggedCount++;
 	}
+
+	return flaggedCount;
+}
+
+type ContentParser = (db: Db, attemptId: number, rows: RawCsvRow[]) => number;
+
+// Only entries for what's actually implemented — not required to cover every
+// ImportContentType key. A lookup miss (`inkings` today) throws a clear error rather than
+// TypeScript pretending it's proven unreachable; the isActiveImportContentType guard is what
+// actually keeps unimplemented content types from reaching this function in practice.
+const CONTENT_PARSERS: Partial<Record<ImportContentType, ContentParser>> = {
+	pens: parsePensIntoAttempt,
+	inks: parseInksIntoAttempt
+};
+
+export function parseCatalogImport(
+	db: Db,
+	{ csv, contentType }: { csv: string; contentType: ImportContentType }
+): { attemptId: number } {
+	const parser = CONTENT_PARSERS[contentType];
+	if (!parser) {
+		throw new Error(`no parser registered for content type "${contentType}"`);
+	}
+
+	const attempt = db
+		.insert(import_attempts)
+		.values({ operation_type: 'catalog_import', content_type: contentType })
+		.returning()
+		.get();
+
+	const rows = parse(csv, CSV_OPTIONS) as RawCsvRow[];
+	const flaggedCount = parser(db, attempt.id, rows);
 
 	db.insert(import_runs)
 		.values({
 			operation_type: 'catalog_import',
 			mode: 'dry_run',
-			report_summary: {
-				totalRows: pensRaw.length + inksRaw.length,
-				pensRows: pensRaw.length,
-				inksRows: inksRaw.length,
-				flaggedCount
-			}
+			report_summary: { contentType, rows: rows.length, flaggedCount }
 		})
 		.run();
 
@@ -917,7 +942,7 @@ export type CommitResult = {
 //      needs_confirmation: a possible_duplicate or unparseable_nib row can
 //      carry field ambiguity too (see docs/adr/2026-07-10-flag-signals-are-
 //      not-mutually-exclusive.md).
-function isItemFullyDecided(item: FlaggedItemRow): boolean {
+export function isItemFullyDecided(item: FlaggedItemRow): boolean {
 	if (item.decision === 'skip') return true;
 
 	const requiresRowDecision = item.flag_type !== null && item.flag_type !== 'needs_confirmation';
