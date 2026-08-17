@@ -55,10 +55,19 @@ app, and the ink bulk-edit feature that directly targets FPC's worst pain point
    camera/external service — this is how "no live external state" holds for this
    slice); contract test for upload; Playwright for the upload flow.
 
-6. **Pen photo.** Attach-only, no extraction — pen color is evaluated point-in-time
-   later (Phase 5's aesthetic pairing), nothing precomputed or stored beyond the photo
-   itself. Thinner slice.
-   *Gate:* same tiers as step 5, minus the extraction-specific unit tests.
+6. **Pen photo.** Two photo roles: `display` (full pen, attach-only, cosmetic, never
+   extracted) and `material` (tight macro closeup of bare barrel material, shot under the
+   same fixed-exposure lightbox discipline as ink swatches). The `material` role feeds a
+   palette-extraction service — a genuine extension of step 5's `sharp`-based swatch
+   service, sharing its white-balance/normalization and color-space conversion so pen and
+   ink colors stay comparable, not a separate pathway that happens to look similar. Produces
+   a small set of dominant colors (color-quantization, weighted by pixel share) instead of
+   one averaged value, stored in a new `pen_palette` table (`pen_id`, `hex`, `weight`) —
+   deliberately not named with "swatch," which stays ink-specific. Uploading a new/replacement
+   `material` photo re-runs extraction and replaces the pen's rows. See
+   `docs/adr/2026-08-16-pen-color-is-extracted-and-stored-as-a-palette.md`.
+   *Gate:* same tiers as step 5, plus unit tests against checked-in fixture material-closeup
+   images asserting the extracted palette (fixed inputs, deterministic clusters).
 
 7. **Bulk operations for ink.** Multi-select + bulk field update across selected
    rows — the confirmed real need from the vision doc, arrival-in-batches being the

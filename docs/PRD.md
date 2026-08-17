@@ -295,14 +295,18 @@ feature rather than a static, disconnected report:
   OCR/vision pipeline** — the cost of automating it would be small (usage-based API pricing at
   this volume), but not worth taking on for a step that already works, and a cheap non-LLM OCR
   library would likely be less accurate on handwritten labels than the current manual step.
-- **Pen** — a photo per pen, evaluated *point-in-time*, not precomputed. FPC's `Color` field
-  turns out to be the resin/material name (e.g. "Primary Manipulation 5.5"), not an actual color
-  value, and custom artisan resins are often swirled/multi-tone anyway — there's no clean single
-  value to derive ahead of time even if precomputing were worth it. Rather than a batch
-  photo-extraction pipeline that stores a color or palette per pen, the aesthetic-pairing
-  suggestion (§6.7) evaluates the pen's photo fresh at the moment of the ask — consistent with
-  the grounding principle that AI re-derives from ground truth each time (§6.7). Nothing is
-  extracted or stored per pen; the photo itself is the only asset that needs to exist.
+- **Pen** — two photo roles: a **display** photo (the full pen, attach-only, cosmetic record,
+  never used for extraction) and a **material** photo (a tight macro closeup of bare barrel
+  material only — no cap, no trim, no background clutter — shot under the same fixed-exposure
+  lightbox discipline as ink swatches). FPC's `Color` field turns out to be the resin/material
+  name (e.g. "Primary Manipulation 5.5"), not an actual color value, and custom artisan resins
+  are often swirled/multi-tone anyway — but that argues for extracting a **palette**, not
+  skipping extraction: the material photo is run through the same extraction pipeline ink
+  swatches use (see docs/adr/2026-08-16-pen-color-is-extracted-and-stored-as-a-palette.md),
+  producing a small set of dominant colors stored per pen (`pen_palette`) rather than one
+  averaged value. Sharing the ink pipeline matters beyond consistency — the aesthetic-pairing
+  suggestion (§6.7) scores pen vs. ink color by ΔE, which is only meaningful if both sides were
+  captured and converted the same way.
 - **Nib** — a photo per nib, likely similar point-in-time treatment to pens. Not yet designed in
   detail.
 
@@ -343,8 +347,9 @@ experiment responses additionally need to be easy to regenerate with feedback.
 **Choosing from the list creates the ledger Start entry directly**, in the same conversation —
 handing back off to the physical world (gather pen/ink/nib, fill the pen) at exactly that point.
 
-**Aesthetic pairing evaluates the pen's photo at the moment of the ask** (see §6.5) — no
-precomputed color data to draw on; the suggestion flow reads the actual photo fresh each time.
+**Aesthetic pairing reads the pen's stored color palette** (see §6.5) — `pen_palette`, extracted
+from the pen's material photo through the same pipeline ink swatches use, not a live photo
+re-evaluation per request.
 
 **No proactive/unprompted suggestions.** Everything here is pulled on request, never pushed.
 

@@ -33,9 +33,11 @@ blended with Ken's own entries, per the vision doc's explicit rules.
      pen+ink combinations.
    - **Find a match** (given an ink → suggest pen+nib) — ranks by past pairing
      performance/rating for that specific ink.
-   - **Aesthetic match** — pen photo color evaluated **fresh at request time**
-     (reuses Phase 3's swatch-extraction service, called live, never cached or
-     stored per-pen) vs. ink color, ΔE-based complement/match scoring.
+   - **Aesthetic match** — reads the pen's stored `pen_palette` (Phase 3 step 6) vs. ink
+     color, ΔE-based complement/match scoring. Both sides came through the same
+     extraction pipeline, so the comparison is apples-to-apples; no live photo
+     re-evaluation per request. See
+     `docs/adr/2026-08-16-pen-color-is-extracted-and-stored-as-a-palette.md`.
 
    *Gate:* every response shape is asserted directly in unit tests:
    - length ≥ 2 when data allows — never a single confident pick, per the vision
