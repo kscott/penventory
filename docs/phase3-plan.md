@@ -48,7 +48,12 @@ app, and the ink bulk-edit feature that directly targets FPC's worst pain point
 5. **Ink swatch photo pipeline.** Ports `swatch_extract.py`'s logic (auto-detect the
    swatch region in the lightbox photo, white-balance, extract a representative color,
    generate the labeled Photo/Colorimeter/FPC composite overlay) to a `sharp`-based
-   service. `photos` table, upload route, UI.
+   service. `photos` table, upload route, UI. See
+   `docs/spikes/2026-08-22-image-pipeline-ts-port.md` before starting — a spike already
+   validated the `sharp`-based approach, found HEIC pixel decode doesn't work in this
+   project's container (not a practical blocker — see the doc), and surfaced two bugs in
+   the Python reference implementation worth designing around from the start rather than
+   re-discovering.
    **`swatched` computed column added by migration here** — its dependency (`photos`)
    now exists (see Phase 1's "Deferred columns" note).
    *Gate:* unit tests against **checked-in fixture swatch images** (no live
