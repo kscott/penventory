@@ -44,14 +44,84 @@ use File → Export → Export Unmodified Original(s). So the practical file hit
 will already be JPEG unless a user deliberately exports raw originals.
 
 **If Penventory ever wants to accept raw HEIC directly** (e.g. a mobile-upload flow that doesn't
-go through Photos.app's export step first), two options, neither spiked further here:
+go through Photos.app's export step first), two options:
 - Convert HEIC → JPEG client-side or at the upload boundary before it reaches `sharp`.
-- Build/vendor a `libvips`/`libheif` with a real HEVC decoder — nontrivial given the licensing
-  situation; not a standard prebuilt, would need real investigation before committing to it.
+- Build `libvips` against a real HEVC decoder and point `sharp` at it. Not spiked (no build
+  attempted, no container run to confirm it actually decodes) — but the path is documented below
+  since it's a real, available option, not just a "maybe possible" note.
 
 Recommendation if/when this becomes a real requirement: validate the actual upload path's file
 format before assuming JPEG-only is sufficient — this spike didn't test what a phone camera app
 or a PWA `<input type=file>` capture actually hands the server.
+
+### Building libvips with real HEIC decode — the option, not (yet) exercised
+
+The gap is a **deliberate patent-licensing exclusion from sharp's prebuilt binary**, confirmed
+against sharp's own GitHub issues and the libvips maintainers, not a technical limitation: HEVC/
+H.265 is patent-encumbered, and a globally-distributed npm binary avoids shipping a decoder for it.
+Same reason AWS won't offer HEIC support in a shared Lambda layer. It doesn't mean the decoder
+doesn't exist or can't be built — it means nobody wants to be the one distributing it pre-built to
+anonymous npm installs.
+
+For Penventory specifically, two things make this simpler than the general case:
+
+- **Decode-only, no encode needed** — the app only ever *reads* an uploaded HEIC photo, never
+  writes one. That means `libde265` (the HEVC decoder, LGPL) + `libheif` (the HEIF container
+  format, LGPL), no `x265` (the HEVC *encoder*, GPL) at all. Simpler dependency graph, and clear of
+  GPL entirely for what's actually needed.
+- **Deployment target is always Linux in a container** — the `sharp` docs' one real limitation
+  ("use of a globally-installed libvips is unsupported on Windows and on macOS when running Node.js
+  under Rosetta") doesn't apply; this is a non-issue for a `node:22-slim` Docker build, dev-container
+  parity included.
+- **Not a distribution/patent-pool concern for a single-user, non-distributed app** — the HEVC
+  patent pools' commercial terms are built around manufacturers/distributors of products at scale,
+  not an individual compiling and running an open-source decoder for personal use. Not a legal
+  opinion, just the practical shape of it — the same category of thing as running Plex/Jellyfin
+  with HEVC transcoding at home, which is common and unremarked-on.
+
+**Two build paths, not yet tried against each other:**
+
+1. **Try apt first — may already be enough.** Debian bookworm's *main* repo (not just backports)
+   already carries `libde265-dev` (1.0.11-1+deb12u2) and `libvips-dev` depends on `libheif-dev`
+   directly:
+   ```dockerfile
+   RUN apt-get update && apt-get install -y --no-install-recommends \
+       libheif-dev libde265-dev libvips-dev pkg-config \
+       && rm -rf /var/lib/apt/lists/*
+   ```
+   Whether Debian's own `libheif-dev` build has HEVC decode actually compiled in (vs. built as an
+   optional plugin, per `libheif-plugin-libde265` existing separately in bookworm-*backports* for a
+   newer libheif) is the open question — check with `heif-convert --list-decoders` inside the
+   container before assuming this alone is sufficient.
+
+2. **Build from source if apt's build doesn't have it compiled in** — guaranteed to work, more
+   image bloat/build time:
+   ```dockerfile
+   RUN apt-get update && apt-get install -y --no-install-recommends \
+       build-essential cmake pkg-config git ca-certificates \
+       && rm -rf /var/lib/apt/lists/*
+   RUN git clone --depth 1 https://github.com/strukturag/libde265.git /tmp/libde265 \
+       && cmake -S /tmp/libde265 -B /tmp/libde265/build && cmake --build /tmp/libde265/build -j \
+       && cmake --install /tmp/libde265/build
+   RUN git clone --depth 1 https://github.com/strukturag/libheif.git /tmp/libheif \
+       && cmake -S /tmp/libheif -B /tmp/libheif/build -DWITH_X265=OFF \
+       && cmake --build /tmp/libheif/build -j && cmake --install /tmp/libheif/build
+   # then build libvips itself from source, linked against this libheif —
+   # see https://github.com/libvips/libvips for its own build instructions
+   ```
+
+**Getting `sharp` to actually use it, either path:**
+```dockerfile
+ENV SHARP_FORCE_GLOBAL_LIBVIPS=1
+RUN ldconfig && npm install sharp
+```
+`pkg-config --modversion vips-cpp` must resolve for this to work — confirm it does before the
+`npm install` step. `SHARP_IGNORE_GLOBAL_LIBVIPS` is the opposite flag (forces the bundled prebuilt,
+skips detection entirely) — don't set that one.
+
+None of this has been run — no container built, no `heif-convert`/`sharp` decode test against a
+real HEIC file with either path. Before committing to this for Phase 3 step 5, actually build it
+and confirm decode works, the same way Finding 1's failure was confirmed rather than assumed.
 
 ## Finding 2: the ported algorithm matches Python closely — when bbox detection succeeds
 
