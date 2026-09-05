@@ -561,6 +561,14 @@ of what someone actually does with the app first, before touching how it's built
 - "Find a better match for this ink" — given an ink, suggest the ideal pen + nib
 - Aesthetic pairing — pick an ink whose color complements or matches the pen itself, not just a
   performance-based match
+  - **Mechanism already exists, built for the ink collection, not yet wired to Penventory**
+    (Ken, 2026-09-05): `~/Notes/personal/ink-collection/ink_lib.py`'s
+    `chroma_context_linkage_clusters()` groups the whole ink collection into real near-dupe
+    clusters (CIEDE2000, chroma-aware — see its docstring for why plain CIEDE2000 wasn't enough).
+    Given a pen's color, find its nearest ink/cluster and suggest from there: matchy-matchy (an
+    ink from the SAME cluster — "all close enough to read as one choice"), complementary (a
+    cluster on the opposite/adjacent side of the hue wheel), or off-the-wall (a cluster far from
+    both, deliberately). Reuse the clustering, don't reimplement color matching from scratch here.
 
 **Data accessibility to external tools is a first-class property**, not just the app's own
 built-in views. Freeform notes are reportable too, given the right access — an LLM can extract
