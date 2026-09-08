@@ -340,6 +340,13 @@ that are really a base attribute of the item.
 
 ## Color similarity — already prototyped, use it as the spec
 
+> The prototype has moved on from what's described below. Current state of the
+> colour metric and family/near-dupe definitions: **`docs/prototype-notes.md`**
+> (CIEDE2000 throughout; ~14 overlapping LCh family windows + curated Pastels;
+> the "Reads like" ΔE 4.5 cut distinct from the near-dupe supercluster). The
+> section here is kept for the original framing — it's still true that this
+> tooling is the spec, just no longer accurate on the specifics.
+
 Ken pointed at this folder's existing Python/HTML tooling — built against
 the FPC export, already solving a real version of "find inks similar to this one," to
 generalize into the app rather than redesign from scratch:

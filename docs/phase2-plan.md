@@ -11,6 +11,13 @@ Auth already exists by this point — built in Phase 1.1 (needed there first, si
 the first web-reachable feature mutating real data), not repeated here. Every route in
 this phase is gated by it.
 
+**UI/UX decisions for these views live in `docs/prototype-notes.md`** (from the static
+ink-collection prototype): flat swatch wall sorted lightness→chroma, every swatch links
+to the ink detail view, brand/family labels link to their views (brand self-link
+suppressed on-brand), no explainer prose in the rendered UI, empty sections omitted,
+give-away flag on the ink. Colour-science (CIEDE2000, near-dupe clustering, family
+windows) is in the same doc and `vision.md` §"Color similarity".
+
 Color Family, Color Wheel, Tone, and Brand A–Z are primary/day-one (per vision doc
 §6.4). Near-Dupes is an explicit second wave, listed last here for that reason, not
 because it's less important.

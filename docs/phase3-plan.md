@@ -5,6 +5,12 @@ the vision doc calls "job one," the existing swatch-photo pipeline brought into 
 app, and the ink bulk-edit feature that directly targets FPC's worst pain point
 (losing scroll position on every single-item edit).
 
+**The ink *show* page** (step 1's list/show slice) has a worked prototype —
+`docs/prototype-notes.md` §"Phase 3": hero colour block + swatch photo with
+auto-contrasting text, data-only info block (only populated fields), a tight
+"Reads like" section (pairwise CIEDE2000 ≤ 4.5, omitted when empty), brand name
+links to the brand view, give-away tag.
+
 ## Ordered steps
 
 1. **Ink CRUD** (list/show/add/edit) — full slice. Canonical Brand/Line picker with
