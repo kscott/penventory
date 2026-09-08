@@ -101,6 +101,14 @@ The **ink detail view is the hub.** Any ink tile, anywhere in the app, links to
 it. From a browse page it's same-tab (you're navigating); from another ink's
 "Reads like" it's a new tab (you're comparing).
 
+**Exception — the collection table view** (`collected_inks.html`): the swatch and
+name open the detail view as a **popup**, not a navigation (it's an `<iframe>` of
+the same detail page, so it can't drift). Ken wants the peek-without-leaving
+there. The Brand and Family cells still link out (brand view / family view).
+The collection view's Family column uses the same `families_for()` taxonomy as
+everything else — an ink can carry two family badges, both linked; the family
+filter matches on either.
+
 ## Slug / URL scheme
 
 `ink_lib.slugify(text)` — lowercase, apostrophes dropped, every other
